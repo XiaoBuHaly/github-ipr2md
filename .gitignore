@@ -1,0 +1,22 @@
+# Build artifacts
+/build/
+/build-werror/
+/cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+CMakeUserPresets.json
+
+# Export outputs (generated)
+/issues.md
+/issues-*.md
+/issues-export/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/

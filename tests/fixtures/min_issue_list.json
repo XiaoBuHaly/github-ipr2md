@@ -1,0 +1,25 @@
+[
+  {
+    "number": 1,
+    "title": "Test issue",
+    "state": "OPEN",
+    "url": "https://example.invalid/issue/1",
+    "body": "Hello from fixture",
+    "labels": [
+      { "name": "bug", "color": "d73a4a", "description": "Something is not working" }
+    ],
+    "comments": [
+      {
+        "body": "First comment",
+        "url": "https://example.invalid/issue/1#comment-1",
+        "createdAt": "2025-01-01T00:00:00Z",
+        "author": { "login": "alice", "url": "https://example.invalid/u/alice" },
+        "authorAssociation": "CONTRIBUTOR",
+        "reactionGroups": [
+          { "content": "THUMBS_UP", "users": { "totalCount": 1 } }
+        ]
+      }
+    ]
+  }
+]
+
