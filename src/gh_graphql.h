@@ -45,6 +45,15 @@ struct FetchOptions {
 // Fetches repo issues+PRs via `gh api graphql ...`, including comment pagination.
 RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string& repo, const FetchOptions& opt);
 
+// Fetches a single issue-or-pull-request by number via `gh api graphql ...`, including comment pagination.
+// Implementation queries both issue(number) and pullRequest(number) in one request, and expects exactly one to exist.
+// Throws std::runtime_error if not found / ambiguous / if `gh` fails.
+RepoExport fetch_item_by_number_via_gh_graphql(
+    const std::string& owner,
+    const std::string& repo,
+    int number,
+    const FetchOptions& opt);
+
 }  // namespace ghx
 
 

@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.os }}${{ matrix.cc && format(', {0}', matrix.cc) || '' }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+            build_type: Release
+          - os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+            build_type: Release
+          - os: macos-latest
+            cc: clang
+            cxx: clang++
+            build_type: Release
+          - os: windows-latest
+            build_type: Release
+
+    env:
+      BUILD_DIR: build-ci
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.cache/fetchcontent
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare FetchContent cache directory
+        run: cmake -E make_directory ${{ env.FETCHCONTENT_BASE_DIR }}
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FETCHCONTENT_BASE_DIR }}
+          key: ${{ runner.os }}-${{ matrix.cc || 'msvc' }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.cc || 'msvc' }}-fetchcontent-
+            ${{ runner.os }}-fetchcontent-
+
+      - name: Configure CMake (non-Windows)
+        if: runner.os != 'Windows'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: >
+          cmake -S . -B ${{ env.BUILD_DIR }}
+          -DENABLE_WERROR=ON
+          -DFETCHCONTENT_BASE_DIR=${{ env.FETCHCONTENT_BASE_DIR }}
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B ${{ env.BUILD_DIR }} -DENABLE_WERROR=ON -DFETCHCONTENT_BASE_DIR=${{ env.FETCHCONTENT_BASE_DIR }}
+
+      - name: Build
+        run: cmake --build ${{ env.BUILD_DIR }} --config ${{ matrix.build_type }} --parallel
+
+      - name: Run tests
+        run: ctest --test-dir ${{ env.BUILD_DIR }} -C ${{ matrix.build_type }} --output-on-failure

@@ -8,6 +8,9 @@
 #include <CLI/CLI.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -19,6 +22,79 @@
 namespace fs = std::filesystem;
 using namespace ghx;
 
+static std::string trim_ascii_ws(std::string s) {
+  auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+  s.erase(s.begin(), std::find_if_not(s.begin(), s.end(), is_space));
+  s.erase(std::find_if_not(s.rbegin(), s.rend(), is_space).base(), s.end());
+  return s;
+}
+
+static std::string normalize_owner_repo_arg(std::string s) {
+  s = trim_ascii_ws(std::move(s));
+  // Drop URL fragments and query strings (common when pasting GitHub URLs).
+  if (auto pos = s.find('#'); pos != std::string::npos) s = s.substr(0, pos);
+  if (auto pos = s.find('?'); pos != std::string::npos) s = s.substr(0, pos);
+  // Allow "/owner/repo" (common in URLs) by stripping leading slashes.
+  while (!s.empty() && (s.front() == '/' || s.front() == '\\')) s.erase(s.begin());
+  while (!s.empty() && s.back() == '/') s.pop_back();
+
+  // If user pasted a remote URL, attempt to parse it.
+  if (s.find("://") != std::string::npos || s.rfind("git@", 0) == 0 || s.find("github.com") != std::string::npos) {
+    try {
+      return parse_owner_repo_from_remote_url(s);
+    } catch (...) {
+      // Fall back to raw input.
+    }
+  }
+  return s;
+}
+
+struct RepoArgParse {
+  std::string owner_repo;
+  int id = 0;  // optional: extracted from issue/pr URL, e.g. .../issues/123 or .../pull/123
+};
+
+static RepoArgParse parse_repo_arg(std::string s) {
+  RepoArgParse out;
+  s = trim_ascii_ws(std::move(s));
+  if (s.empty()) return out;
+
+  // Drop URL fragments and query strings.
+  if (auto pos = s.find('#'); pos != std::string::npos) s = s.substr(0, pos);
+  if (auto pos = s.find('?'); pos != std::string::npos) s = s.substr(0, pos);
+
+  // Extract id from GitHub web URLs if present.
+  // Accept both full URLs and bare paths like /owner/repo/issues/123.
+  auto s_for_scan = s;
+  // Normalize backslashes.
+  for (auto& c : s_for_scan) if (c == '\\') c = '/';
+
+  auto find_number_after = [&](const char* marker) -> int {
+    auto p = s_for_scan.find(marker);
+    if (p == std::string::npos) return 0;
+    p += std::strlen(marker);
+    if (p >= s_for_scan.size()) return 0;
+    // Parse digits.
+    size_t end = p;
+    while (end < s_for_scan.size() && std::isdigit(static_cast<unsigned char>(s_for_scan[end]))) end++;
+    if (end == p) return 0;
+    try {
+      return std::stoi(s_for_scan.substr(p, end - p));
+    } catch (...) {
+      return 0;
+    }
+  };
+
+  int id = 0;
+  id = std::max(id, find_number_after("/issues/"));
+  id = std::max(id, find_number_after("/pull/"));
+  id = std::max(id, find_number_after("/pulls/"));
+  out.id = id;
+
+  out.owner_repo = normalize_owner_repo_arg(std::move(s));
+  return out;
+}
+
 static nlohmann::json read_json_file(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) throw std::runtime_error("failed to open input json: " + path);
@@ -27,7 +103,7 @@ static nlohmann::json read_json_file(const std::string& path) {
 }
 
 static void write_text_file(const fs::path& path, const std::string& content) {
-  // If writing to a file in the current directory (e.g. "issues.md"),
+  // If writing to a file in the current directory (e.g. "output.md"),
   // parent_path() is empty. create_directories("") would throw.
   const auto parent = path.parent_path();
   if (!parent.empty()) {
@@ -141,7 +217,7 @@ int main(int argc, char** argv) {
 
   std::string repo_arg;
   std::string in_json;
-  std::string out_path = "issues.md";
+  std::string out_path = "output.md";
   std::string state = "all";
   int limit = 0;
   int split_n = 0;
@@ -150,6 +226,9 @@ int main(int argc, char** argv) {
   std::string title = "Issues Export";
   std::string stats_json_path;
   std::string hostname;
+  int id = 0;
+  int removed_issue = 0;
+  int removed_pr = 0;
 
   bool include_issues = true;
   bool include_prs = true;
@@ -187,7 +266,10 @@ int main(int argc, char** argv) {
 
   app.add_option("--repo", repo_arg, "Repo in owner/name format. Default: infer from git remote.");
   app.add_option("--in", in_json, "Convert existing JSON (from `gh issue list --json ...`) to Markdown.");
-  app.add_option("--out", out_path, "Output path. Default: ./issues.md (or a directory when --split/--per-item).");
+  app.add_option("--out", out_path, "Output path. Default: ./output.md (or a directory when --split/--per-item).");
+  app.add_option("--id", id, "Export a single Issue/PR by number (requires --repo or infer from git remote).");
+  auto opt_removed_issue = app.add_option("--issue", removed_issue, "(removed) Use --id instead.");
+  auto opt_removed_pr = app.add_option("--pr", removed_pr, "(removed) Use --id instead.");
   app.add_option("--state", state, "Filter state: all|open|closed. Default: all.")
       ->check(CLI::IsMember({"all", "open", "closed"}));
   app.add_option("--limit", limit, "Max number of items (issues+prs). 0 means unlimited. Default: 0.");
@@ -222,6 +304,15 @@ int main(int argc, char** argv) {
 
   CLI11_PARSE(app, argc, argv);
 
+  if (opt_removed_issue->count() > 0) {
+    std::cerr << "Error: --issue has been removed. Use --id instead.\n";
+    return 2;
+  }
+  if (opt_removed_pr->count() > 0) {
+    std::cerr << "Error: --pr has been removed. Use --id instead.\n";
+    return 2;
+  }
+
   include_issues = !no_issues;
   include_prs = !no_prs;
   include_body = !no_body;
@@ -235,6 +326,20 @@ int main(int argc, char** argv) {
   include_milestone = !no_milestone;
   include_stats = !no_stats;
   progress_enabled = !no_progress;
+
+  // Parse repo_arg once: allow /owner/repo, remote URLs, and GitHub web URLs (repo/issues/pr).
+  auto parsed_repo_arg = parse_repo_arg(repo_arg);
+  if (parsed_repo_arg.id > 0 && id > 0 && parsed_repo_arg.id != id) {
+    std::cerr << "Error: conflicting id: --id and --repo URL number differ.\n";
+    return 2;
+  }
+  if (id <= 0 && parsed_repo_arg.id > 0) id = parsed_repo_arg.id;
+
+  if (id > 0 && (!include_issues || !include_prs)) {
+    // With --id we don't pre-classify Issue/PR; treat --no-issues/--no-prs as conflicting.
+    std::cerr << "Error: --id cannot be used with --no-issues/--no-prs.\n";
+    return 2;
+  }
 
   if (per_item && split_n > 0) {
     std::cerr << "Error: --per-item and --split are mutually exclusive.\n";
@@ -255,11 +360,35 @@ int main(int argc, char** argv) {
       copt.include_links = include_links;
       copt.include_assignees = include_assignees;
       copt.include_milestone = include_milestone;
-      repo = convert_from_issue_list_json(j, repo_arg, copt);
+      repo = convert_from_issue_list_json(j, parsed_repo_arg.owner_repo, copt);
+
+      if (id > 0) {
+        std::vector<Item> filtered;
+        for (const auto& it : repo.items) {
+          if (it.number == id) filtered.push_back(it);
+        }
+        repo.items = std::move(filtered);
+        if (repo.items.empty()) {
+          throw std::runtime_error("item not found in --in JSON: #" + std::to_string(id) +
+                                   " (note: --in JSON is from `gh issue list`, so it typically contains issues only)");
+        }
+      }
     } else {
-      std::string owner_repo = repo_arg.empty() ? infer_repo_from_git_remote(fs::current_path().string()) : repo_arg;
+      std::string owner_repo;
+      if (!parsed_repo_arg.owner_repo.empty()) {
+        owner_repo = parsed_repo_arg.owner_repo;
+      } else {
+        try {
+          owner_repo = infer_repo_from_git_remote(fs::current_path().string());
+        } catch (const std::exception& e) {
+          throw std::runtime_error(std::string(e.what()) + "\nHint: pass --repo owner/name");
+        }
+      }
+      owner_repo = normalize_owner_repo_arg(owner_repo);
       auto slash = owner_repo.find('/');
-      if (slash == std::string::npos) throw std::runtime_error("--repo must be owner/name");
+      if (slash == std::string::npos || slash == 0 || slash + 1 >= owner_repo.size()) {
+        throw std::runtime_error("--repo must be owner/name");
+      }
       std::string owner = owner_repo.substr(0, slash);
       std::string name = owner_repo.substr(slash + 1);
 
@@ -283,10 +412,18 @@ int main(int argc, char** argv) {
       fopt.progress_interval_ms = progress_interval_ms;
       fopt.labels_first = labels_first;
       fopt.assignees_first = assignees_first;
-      repo = fetch_repo_via_gh_graphql(owner, name, fopt);
+      if (id > 0) {
+        repo = fetch_item_by_number_via_gh_graphql(owner, name, id, fopt);
+      } else {
+        repo = fetch_repo_via_gh_graphql(owner, name, fopt);
+      }
     }
 
     auto pp = post_process_repo(repo, include_issues, include_prs, state, limit, reverse_order);
+
+    if (id > 0 && repo.items.empty()) {
+      throw std::runtime_error("item not found or filtered out by --state");
+    }
 
     StatsSummary stats = compute_stats(repo);
     if (include_stats) {

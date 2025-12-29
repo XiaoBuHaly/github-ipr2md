@@ -283,6 +283,93 @@ query(
 )GRAPHQL";
 }
 
+static std::string single_item_query() {
+  // Use IssueOrPullRequest union to avoid errors like:
+  // "Could not resolve to a PullRequest with the number of X" when X is an Issue.
+  return R"GRAPHQL(
+query(
+  $owner: String!
+  $repo: String!
+  $number: Int!
+  $includeComments: Boolean!
+  $includeLabels: Boolean!
+  $includeAssignees: Boolean!
+  $includeMilestone: Boolean!
+  $includeReactions: Boolean!
+  $commentPerPage: Int!
+  $labelsFirst: Int!
+  $assigneesFirst: Int!
+) {
+  repository(owner: $owner, name: $repo) {
+    nameWithOwner
+    url
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue {
+        id
+        number
+        url
+        title
+        body
+        state
+        createdAt
+        updatedAt
+        closedAt
+        author { login url }
+        authorAssociation
+        labels(first: $labelsFirst) @include(if: $includeLabels) { nodes { name color description } }
+        assignees(first: $assigneesFirst) @include(if: $includeAssignees) { nodes { login url } }
+        milestone @include(if: $includeMilestone) { title state dueOn }
+        reactionGroups @include(if: $includeReactions) { content users { totalCount } }
+        comments(first: $commentPerPage) @include(if: $includeComments) {
+          totalCount
+          pageInfo { endCursor hasNextPage }
+          nodes {
+            body
+            createdAt
+            url
+            author { login url }
+            authorAssociation
+            reactionGroups @include(if: $includeReactions) { content users { totalCount } }
+          }
+        }
+      }
+      ... on PullRequest {
+        id
+        number
+        url
+        title
+        body
+        state
+        createdAt
+        updatedAt
+        closedAt
+        mergedAt
+        author { login url }
+        authorAssociation
+        labels(first: $labelsFirst) @include(if: $includeLabels) { nodes { name color description } }
+        assignees(first: $assigneesFirst) @include(if: $includeAssignees) { nodes { login url } }
+        milestone @include(if: $includeMilestone) { title state dueOn }
+        reactionGroups @include(if: $includeReactions) { content users { totalCount } }
+        comments(first: $commentPerPage) @include(if: $includeComments) {
+          totalCount
+          pageInfo { endCursor hasNextPage }
+          nodes {
+            body
+            createdAt
+            url
+            author { login url }
+            authorAssociation
+            reactionGroups @include(if: $includeReactions) { content users { totalCount } }
+          }
+        }
+      }
+    }
+  }
+}
+)GRAPHQL";
+}
+
 static std::string node_comment_query() {
   return R"GRAPHQL(
 query(
@@ -323,6 +410,63 @@ query(
   }
 }
 )GRAPHQL";
+}
+
+static nlohmann::json gh_api_graphql(
+    const std::string& query,
+    const std::vector<std::pair<std::string, std::string>>& variables,
+    const FetchOptions& opt);
+
+static void paginate_comments_for_item(
+    const std::string& cquery,
+    const std::string& graphql_id,
+    Item& item,
+    const FetchOptions& opt,
+    ProgressPrinter& progress) {
+  if (graphql_id.empty()) return;
+  if (!opt.include_comments) return;
+  if (!item.comments_has_next_page) return;
+
+  std::string cursor = item.comments_end_cursor;
+  bool has_page = item.comments_has_next_page;
+
+  while (has_page) {
+    progress.tick("Comments paging: #" + std::to_string(item.number) + " ...", false);
+    std::vector<std::pair<std::string, std::string>> vars;
+    vars.emplace_back("id", graphql_id);
+    vars.emplace_back("commentPerPage", std::to_string(opt.comment_per_page));
+    vars.emplace_back("commentCursor", cursor);
+    vars.emplace_back("includeReactions", opt.include_reactions ? "true" : "false");
+    auto json = gh_api_graphql(cquery, vars, opt);
+
+    auto data = json.find("data");
+    if (data == json.end() || !data->is_object()) break;
+    auto node = data->find("node");
+    if (node == data->end() || !node->is_object()) break;
+    auto comments = node->find("comments");
+    if (comments == node->end() || !comments->is_object()) break;
+
+    auto pi = comments->find("pageInfo");
+    if (pi != comments->end() && pi->is_object()) {
+      cursor = jstr(*pi, "endCursor");
+      has_page = pi->value("hasNextPage", false);
+    } else {
+      has_page = false;
+    }
+
+    auto nodes = comments->find("nodes");
+    if (nodes != comments->end() && nodes->is_array()) {
+      for (const auto& c : *nodes) {
+        if (!c.is_object()) continue;
+        item.comments.push_back(parse_comment_node(c, opt));
+      }
+    }
+  }
+
+  // Keep item state consistent post-pagination.
+  item.comments_end_cursor = cursor;
+  item.comments_has_next_page = has_page;
+  item.comments_total_count = std::max(item.comments_total_count, static_cast<int>(item.comments.size()));
 }
 
 static nlohmann::json gh_api_graphql(
@@ -503,38 +647,7 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
     size_t done_cnt = 0;
     for (const auto& ref : needs_comment_pagination) {
       auto& item = out.items[ref.item_index];
-      std::string cursor = item.comments_end_cursor;
-      bool has_page = item.comments_has_next_page;
-      while (has_page) {
-        progress.tick("Comments paging: #" + std::to_string(item.number) + " ...", false);
-        std::vector<std::pair<std::string, std::string>> vars;
-        vars.emplace_back("id", ref.id);
-        vars.emplace_back("commentPerPage", std::to_string(opt.comment_per_page));
-        vars.emplace_back("commentCursor", cursor);
-        vars.emplace_back("includeReactions", opt.include_reactions ? "true" : "false");
-        auto json = gh_api_graphql(cquery, vars, opt);
-        auto data = json.find("data");
-        if (data == json.end() || !data->is_object()) break;
-        auto node = data->find("node");
-        if (node == data->end() || !node->is_object()) break;
-        auto comments = node->find("comments");
-        if (comments == node->end() || !comments->is_object()) break;
-        auto pi = comments->find("pageInfo");
-        if (pi != comments->end() && pi->is_object()) {
-          cursor = jstr(*pi, "endCursor");
-          has_page = pi->value("hasNextPage", false);
-        } else {
-          has_page = false;
-        }
-        auto nodes = comments->find("nodes");
-        if (nodes != comments->end() && nodes->is_array()) {
-          for (const auto& c : *nodes) {
-            if (!c.is_object()) continue;
-            item.comments.push_back(parse_comment_node(c, opt));
-          }
-        }
-      }
-      item.comments_total_count = std::max(item.comments_total_count, static_cast<int>(item.comments.size()));
+      paginate_comments_for_item(cquery, ref.id, item, opt, progress);
       done_cnt++;
       progress.tick("Additional comments done: " + std::to_string(done_cnt) + "/" + std::to_string(needs_comment_pagination.size()) +
                         " (current #" + std::to_string(item.number) + ")",
@@ -544,6 +657,80 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
 
   progress.done("Fetch complete. items=" + std::to_string(out.items.size()));
 
+  return out;
+}
+
+RepoExport fetch_item_by_number_via_gh_graphql(
+    const std::string& owner,
+    const std::string& repo_name,
+    int number,
+    const FetchOptions& opt) {
+  if (number <= 0) {
+    throw std::invalid_argument("fetch_item_by_number_via_gh_graphql: number must be > 0");
+  }
+
+  RepoExport out;
+
+  ProgressPrinter progress(opt.progress_enabled, opt.progress_interval_ms);
+  progress.tick(
+      "Fetching " + owner + "/" + repo_name + " #" + std::to_string(number) + " ...",
+      true);
+
+  const auto query = single_item_query();
+
+  std::vector<std::pair<std::string, std::string>> vars;
+  vars.emplace_back("owner", owner);
+  vars.emplace_back("repo", repo_name);
+  vars.emplace_back("number", std::to_string(number));
+  vars.emplace_back("commentPerPage", std::to_string(opt.comment_per_page));
+  vars.emplace_back("labelsFirst", std::to_string(opt.labels_first));
+  vars.emplace_back("assigneesFirst", std::to_string(opt.assignees_first));
+
+  vars.emplace_back("includeComments", opt.include_comments ? "true" : "false");
+  vars.emplace_back("includeLabels", opt.include_labels ? "true" : "false");
+  vars.emplace_back("includeAssignees", opt.include_assignees ? "true" : "false");
+  vars.emplace_back("includeMilestone", opt.include_milestone ? "true" : "false");
+  vars.emplace_back("includeReactions", opt.include_reactions ? "true" : "false");
+
+  auto json = gh_api_graphql(query, vars, opt);
+
+  auto data = json.find("data");
+  if (data == json.end() || !data->is_object()) {
+    throw std::runtime_error("unexpected graphql response: missing data");
+  }
+  auto repo = data->find("repository");
+  if (repo == data->end() || !repo->is_object()) {
+    throw std::runtime_error("unexpected graphql response: missing repository");
+  }
+
+  out.full_name = jstr(*repo, "nameWithOwner");
+  out.url = jstr(*repo, "url");
+
+  auto iopr = repo->find("issueOrPullRequest");
+  if (iopr == repo->end() || iopr->is_null() || !iopr->is_object()) {
+    throw std::runtime_error(std::string("not found: ") + owner + "/" + repo_name + " #" + std::to_string(number));
+  }
+
+  const auto type = jstr(*iopr, "__typename");
+  ItemKind kind = ItemKind::Issue;
+  if (type == "PullRequest") {
+    kind = ItemKind::PullRequest;
+  } else if (type == "Issue") {
+    kind = ItemKind::Issue;
+  } else {
+    throw std::runtime_error(std::string("unexpected __typename for issueOrPullRequest: ") + type);
+  }
+
+  auto id = jstr(*iopr, "id");
+  out.items.push_back(parse_item_node(*iopr, kind, opt));
+
+  // Additional comment pagination for this single node.
+  if (opt.include_comments && !id.empty()) {
+    const auto cquery = node_comment_query();
+    paginate_comments_for_item(cquery, id, out.items[0], opt, progress);
+  }
+
+  progress.done("Fetch complete. items=" + std::to_string(out.items.size()));
   return out;
 }
 

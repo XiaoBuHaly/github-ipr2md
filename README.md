@@ -9,7 +9,7 @@ Supports exporting bodies, comments, labels, reactions, milestones, assignees, a
 - **Fast & Native**: Built with C++17. Uses your existing `gh auth` login session—no new tokens to manage.
 - **Comprehensive**: Exports full history including comments, reactions, labels, milestones, and extensive metadata.
 - **Flexible Output**:
-    - **Single File**: Consolidate everything into one `issues.md`.
+    - **Single File**: Consolidate everything into one `output.md`.
     - **Split Files**: Paginate into chunks (e.g., 100 items per file).
     - **One-per-Item**: Generate individual Markdown files for every issue and PR.
 - **Highly Customizable**: Toggles for every field (e.g., `--no-comments`, `--no-reactions`).
@@ -29,7 +29,7 @@ chmod +x ./run.sh
 ./run.sh
 ```
 
-By default, this infers the repository from your current git directory and exports everything to `./issues.md`.
+By default, this infers the repository from your current git directory and exports everything to `./output.md`.
 
 ### Windows (CMD/PowerShell)
 
@@ -38,6 +38,41 @@ run.bat
 ```
 
 > **Note**: The first run will compile the project. Subsequent runs skip compilation if the executable is already present.
+
+---
+
+## Wrapper Script Flags (`run.sh` / `run.bat`)
+
+Both `run.sh` (Linux/macOS) and `run.bat` (Windows) accept the same `--run-*` wrapper flags. These flags are **not** forwarded to `github-ipr2md`. Use `--` to separate wrapper flags from program flags if needed.
+
+### Common Flags
+
+- `--run-build-dir <dir>`: Build directory (default: `./build`)
+- `--run-build-type <type>`: `Debug|Release|RelWithDebInfo|MinSizeRel` (default: `Release`)
+- `--run-build`: Force **configure + build** (no directory deletion)
+- `--run-clean`: **Clean rebuild** (delete build dir, then configure + build)
+- `--run-no-build`: Run only, do not build (the executable must already exist)
+- `--run-werror`: Configure with `-DENABLE_WERROR=ON` (also enabled in CI)
+- `--run-help` (Windows also supports `-h`): Show wrapper help
+
+### Examples
+
+Linux/macOS:
+
+```bash
+./run.sh --run-clean -- --help
+./run.sh --run-build-type Debug -- --help
+./run.sh --run-build --repo owner/repo --out output.md
+```
+
+Windows:
+
+```bat
+run.bat --run-clean -- --help
+run.bat --run-build-type Debug -- --help
+run.bat --run-build --repo owner/repo --out output.md
+run.bat --run-build --repo https://github.com/owner/repo/issues/123 --out issue-123.md
+```
 
 ---
 
@@ -73,7 +108,7 @@ Export a specific repository to a single file:
 Generate output suitable for version control (git). This mode disables generation timestamps and enforces stable sorting to minimize diff noise.
 
 ```bash
-./run.sh --repo owner/repo --idempotent --out issues.md
+./run.sh --repo owner/repo --idempotent --out output.md
 ```
 
 ### 3. Migration (One File Per Issue)
@@ -96,7 +131,7 @@ Avoid huge files by splitting output into chunks (e.g., 100 items per file):
 Convert a JSON file exported by `gh` (e.g., `gh issue list --json ...`) into Markdown without network requests.
 
 ```bash
-./run.sh --in issues.json --out issues.md
+./run.sh --in issues.json --out output.md
 ```
 
 ### 6. Minimal Export
@@ -117,9 +152,10 @@ Export only the core content, skipping supplementary data to reduce noise.
 ### Input / Output
 | Flag | Description |
 | :--- | :--- |
-| `--repo owner/name` | Specify repository (defaults to git remote origin). |
+| `--repo owner/name` | Specify repository (defaults to git remote origin). Also accepts `/owner/name`, `https://github.com/owner/name`, or even an Issue/PR URL like `https://github.com/owner/name/issues/123` (auto-extracts repo+id). |
 | `--in PATH.json` | Convert an existing JSON file (offline mode). |
 | `--out PATH` | Output file path (or directory for split/per-item modes). |
+| `--id N` | Export a single Issue/PR by number (requires `--repo` or git remote inference). |
 
 ### Filtering & Scope
 | Flag | Description |

@@ -10,6 +10,7 @@
 #else
 #include <io.h>     // _isatty
 #include <stdio.h>  // _fileno, stderr
+#include <windows.h>
 #define GHX_ISATTY ::_isatty
 #define GHX_STDERR_FILENO ::_fileno(stderr)
 #endif
@@ -19,11 +20,40 @@
 
 namespace ghx {
 
+#if defined(_WIN32)
+static bool is_console_stderr() {
+  HANDLE h = ::GetStdHandle(STD_ERROR_HANDLE);
+  if (h == nullptr || h == INVALID_HANDLE_VALUE) return false;
+  DWORD mode = 0;
+  return ::GetConsoleMode(h, &mode) != 0;
+}
+
+static bool console_output_is_utf8() {
+  // 65001 is CP_UTF8. In classic CMD/CP936, Unicode spinner glyphs are mojibake.
+  return ::GetConsoleOutputCP() == 65001;
+}
+#endif
+
 ProgressPrinter::ProgressPrinter(bool enabled, int interval_ms)
     : enabled_(enabled),
-      is_tty_(GHX_ISATTY(GHX_STDERR_FILENO) == 1),
+      is_tty_(
+#if defined(_WIN32)
+          // Some Windows terminals (e.g. ConPTY) can confuse _isatty; treat console stderr as TTY.
+          is_console_stderr() || (GHX_ISATTY(GHX_STDERR_FILENO) == 1)
+#else
+          (GHX_ISATTY(GHX_STDERR_FILENO) == 1)
+#endif
+      ),
       interval_ms_(interval_ms) {
   last_ = std::chrono::steady_clock::now() - std::chrono::milliseconds(interval_ms_);
+
+#if defined(_WIN32)
+  // Default: hide Unicode spinner on non-UTF8 console to avoid garbled prefix like "鉅?".
+  if (is_console_stderr() && !console_output_is_utf8()) {
+    spinner_enabled_ = false;
+  }
+#endif
+
   if (enabled_ && is_tty_) {
     start_spinner_thread();
   }
@@ -41,7 +71,17 @@ std::string ProgressPrinter::with_spinner(const std::string& message) {
   if (!spinner_enabled_ || !is_tty_) return message;
 
   static const std::vector<std::string> frames = {
-      "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+      // Braille spinner frames in UTF-8 bytes (avoid source file encoding issues on MSVC/CP936).
+      "\xE2\xA0\x8B",  // ⠋ U+280B
+      "\xE2\xA0\x99",  // ⠙ U+2819
+      "\xE2\xA0\xB9",  // ⠹ U+2839
+      "\xE2\xA0\xB8",  // ⠸ U+2838
+      "\xE2\xA0\xBC",  // ⠼ U+283C
+      "\xE2\xA0\xB4",  // ⠴ U+2834
+      "\xE2\xA0\xA6",  // ⠦ U+2826
+      "\xE2\xA0\xA7",  // ⠧ U+2827
+      "\xE2\xA0\x87",  // ⠇ U+2807
+      "\xE2\xA0\x8F",  // ⠏ U+280F
   };
   const auto idx = spinner_idx_.fetch_add(1, std::memory_order_relaxed);
   const auto& f = frames[idx % frames.size()];

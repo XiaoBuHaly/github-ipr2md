@@ -23,9 +23,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(CLI11 nlohmann_json)
 
-add_executable(github-ipr2md
+set(GHX_SOURCES
   src/main.cpp
-  src/process.cpp
   src/process.h
   src/progress.cpp
   src/progress.h
@@ -42,6 +41,14 @@ add_executable(github-ipr2md
   src/stats.h
 )
 
+if(WIN32)
+  list(APPEND GHX_SOURCES src/process_win.cpp)
+else()
+  list(APPEND GHX_SOURCES src/process_posix.cpp)
+endif()
+
+add_executable(github-ipr2md ${GHX_SOURCES})
+
 target_link_libraries(github-ipr2md
   PRIVATE
     CLI11::CLI11
@@ -53,6 +60,7 @@ option(ENABLE_WERROR "Treat compiler warnings as errors (recommended for CI)" OF
 
 target_compile_options(github-ipr2md PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/W4>
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
   "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic>"
   $<$<AND:$<BOOL:${ENABLE_WERROR}>,$<CXX_COMPILER_ID:MSVC>>:/WX>
   $<$<AND:$<BOOL:${ENABLE_WERROR}>,$<NOT:$<CXX_COMPILER_ID:MSVC>>>:-Werror>
@@ -74,5 +82,25 @@ add_test(
 )
 # Avoid parallel tests clobbering the same output file.
 set_tests_properties(in_mode_smoke PROPERTIES RUN_SERIAL TRUE)
+
+# Optional smoke test for the subprocess runner (no network).
+# Only enabled if git is available at configure time.
+find_program(GIT_EXECUTABLE git)
+if(GIT_EXECUTABLE)
+  if(WIN32)
+    set(GHX_PROCESS_SRC src/process_win.cpp)
+  else()
+    set(GHX_PROCESS_SRC src/process_posix.cpp)
+  endif()
+
+  add_executable(ghx_process_smoke
+    tests/process_smoke.cpp
+    src/process.h
+    ${GHX_PROCESS_SRC}
+  )
+  target_link_libraries(ghx_process_smoke PRIVATE Threads::Threads)
+  target_compile_options(ghx_process_smoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+  add_test(NAME process_smoke_git COMMAND $<TARGET_FILE:ghx_process_smoke> ${GIT_EXECUTABLE})
+endif()
 
 

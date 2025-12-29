@@ -1,6 +1,5 @@
 # Build artifacts
-/build/
-/build-werror/
+/build*/
 /cmake-build-*/
 
 # CMake
@@ -13,10 +12,12 @@ CMakeUserPresets.json
 
 # Export outputs (generated)
 /issues.md
-/issues-*.md
-/issues-export/
+/output.md
+/output/
 
 # OS / IDE
 .DS_Store
 .vscode/
+.cursor/
+.qodo/
 .idea/
