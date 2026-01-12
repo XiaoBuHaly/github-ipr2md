@@ -10,6 +10,11 @@ struct FetchOptions {
   bool include_issues = true;
   bool include_prs = true;
 
+  // PR review export (optional; can be expensive, especially reviewThreads).
+  bool include_pr_review_decision = false;
+  bool include_pr_reviews = false;
+  bool include_pr_review_threads = false;
+
   // all|open|closed
   std::string state = "all";
 

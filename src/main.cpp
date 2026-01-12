@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstring>
 #include <filesystem>
@@ -21,6 +22,31 @@
 
 namespace fs = std::filesystem;
 using namespace ghx;
+
+// #region agent log
+static void agent_log(
+    const char* hypothesisId,
+    const char* location,
+    const char* message,
+    const nlohmann::json& data) {
+  try {
+    std::ofstream f(R"(f:\113Code\github-ipr2md\.cursor\debug.log)", std::ios::app);
+    if (!f) return;
+    nlohmann::json j;
+    j["sessionId"] = "debug-session";
+    j["runId"] = "limit-run1";
+    j["hypothesisId"] = hypothesisId;
+    j["location"] = location;
+    j["message"] = message;
+    j["data"] = data;
+    j["timestamp"] = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+    f << j.dump() << "\n";
+  } catch (...) {
+  }
+}
+// #endregion
 
 static std::string trim_ascii_ws(std::string s) {
   auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
@@ -133,6 +159,148 @@ struct PostProcessInfo {
   std::string max_created_at;
 };
 
+struct WriteResult {
+  std::string wrote_message;  // e.g. "Wrote: output.md" or "Wrote directory: outdir"
+};
+
+static WriteResult write_markdown_output(
+    const RepoExport& repo,
+    const RenderOptions& ropt,
+    const ExportMetadata& meta,
+    const std::string& out_path,
+    int split_n,
+    bool per_item,
+    bool progress_enabled,
+    int progress_interval_ms) {
+  const bool reverse_order = meta.reverse_order;
+
+  WriteResult r;
+  if (split_n <= 0 && !per_item) {
+    ProgressPrinter progress(/*enabled=*/progress_enabled, /*interval_ms=*/progress_interval_ms);
+    // Stream to file to avoid building a huge string and to show progress.
+    const fs::path outp = out_path;
+    const auto parent = outp.parent_path();
+    if (!parent.empty()) fs::create_directories(parent);
+    std::ofstream out(outp, std::ios::binary);
+    if (!out) throw std::runtime_error("failed to open output: " + outp.string());
+
+    write_repo_preamble(out, repo, ropt, nullptr, &meta);
+    const size_t total = repo.items.size();
+    auto last_ui = std::chrono::steady_clock::now() - std::chrono::milliseconds(progress_interval_ms);
+    constexpr size_t kCheckEvery = 256;
+    for (size_t i = 0; i < total; i++) {
+      write_item_markdown(out, repo.items[i], ropt);
+      if (progress_enabled) {
+        const bool force = (i == 0) || (i + 1 == total);
+        if (force || ((i + 1) % kCheckEvery == 0)) {
+          auto now = std::chrono::steady_clock::now();
+          if (force || std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ui).count() >= progress_interval_ms) {
+            last_ui = now;
+            progress.tick("Writing markdown: " + std::to_string(i + 1) + "/" + std::to_string(total), /*force=*/true);
+          }
+        }
+      }
+    }
+    out.flush();
+
+    r.wrote_message = "Wrote: " + out_path;
+    progress.done(r.wrote_message);
+    return r;
+  }
+
+  fs::path out_dir = out_path;
+  if (out_dir.extension() == ".md") {
+    // Common mistake: user passed a file path but asked for split mode.
+    out_dir = out_dir.replace_extension();
+  }
+  fs::create_directories(out_dir);
+
+  if (per_item) {
+    ProgressPrinter progress(/*enabled=*/progress_enabled, /*interval_ms=*/progress_interval_ms);
+    size_t idx = 0;
+    auto last_ui = std::chrono::steady_clock::now() - std::chrono::milliseconds(progress_interval_ms);
+    constexpr size_t kCheckEvery = 64;
+    const size_t total = repo.items.size();
+    for (const auto& it : repo.items) {
+      idx++;
+      std::string prefix = (it.kind == ghx::ItemKind::PullRequest) ? "pr" : "issue";
+      fs::path p = out_dir / (prefix + "-" + std::to_string(it.number) + ".md");
+      const auto parent = p.parent_path();
+      if (!parent.empty()) fs::create_directories(parent);
+      std::ofstream out(p, std::ios::binary);
+      if (!out) throw std::runtime_error("failed to open output: " + p.string());
+      write_item_markdown(out, it, ropt);
+      if (progress_enabled) {
+        const bool force = (idx == 1) || (idx == total);
+        if (force || (idx % kCheckEvery == 0)) {
+          auto now = std::chrono::steady_clock::now();
+          if (force || std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ui).count() >= progress_interval_ms) {
+            last_ui = now;
+            progress.tick("Writing per-item: " + std::to_string(idx) + "/" + std::to_string(total), /*force=*/true);
+          }
+        }
+      }
+    }
+
+    r.wrote_message = "Wrote directory: " + out_dir.string();
+    progress.done(r.wrote_message);
+    return r;
+  }
+
+  // split_n chunked
+  int chunk = 0;
+  const size_t total_items = repo.items.size();
+  const size_t chunk_size = static_cast<size_t>(split_n);
+  const size_t total_chunks = (total_items + chunk_size - 1) / chunk_size;
+  const int chunk_width = std::max(2, static_cast<int>(std::to_string(std::max<size_t>(1, total_chunks)).size()));
+  ProgressPrinter progress(/*enabled=*/progress_enabled, /*interval_ms=*/progress_interval_ms);
+  for (size_t i = 0; i < repo.items.size(); i += static_cast<size_t>(split_n)) {
+    chunk++;
+    RepoExport sub = repo;
+    sub.items.clear();
+    size_t end = std::min(repo.items.size(), i + static_cast<size_t>(split_n));
+    for (size_t k = i; k < end; k++) sub.items.push_back(repo.items[k]);
+
+    std::ostringstream name;
+    name << "chunk-" << std::setw(chunk_width) << std::setfill('0') << chunk << ".md";
+    fs::path p = out_dir / name.str();
+    ExportMetadata chunk_meta = meta;
+    chunk_meta.limit = 0;
+    chunk_meta.truncated = false;
+    chunk_meta.total_available = static_cast<int>(sub.items.size());
+    if (!sub.items.empty()) {
+      // sub.items are already in output order
+      chunk_meta.min_number = sub.items.front().number;
+      chunk_meta.max_number = sub.items.back().number;
+      if (reverse_order) std::swap(chunk_meta.min_number, chunk_meta.max_number);
+      // Only set created_at metadata if both endpoints have timestamps
+      bool first_has_created_at = !sub.items.front().created_at.empty();
+      bool last_has_created_at = !sub.items.back().created_at.empty();
+      if (first_has_created_at && last_has_created_at) {
+        auto first = sub.items.front().created_at;
+        auto last = sub.items.back().created_at;
+        if (reverse_order) std::swap(first, last);
+        chunk_meta.min_created_at = first;
+        chunk_meta.max_created_at = last;
+      }
+    }
+
+    const auto parent = p.parent_path();
+    if (!parent.empty()) fs::create_directories(parent);
+    std::ofstream out(p, std::ios::binary);
+    if (!out) throw std::runtime_error("failed to open output: " + p.string());
+    write_repo_preamble(out, sub, ropt, nullptr, &chunk_meta);
+    for (const auto& it : sub.items) {
+      write_item_markdown(out, it, ropt);
+    }
+    progress.tick("Wrote chunk " + std::to_string(chunk) + " (" + std::to_string(sub.items.size()) + " items)", false);
+  }
+
+  r.wrote_message = "Wrote directory: " + out_dir.string();
+  progress.done(r.wrote_message);
+  return r;
+}
+
 static PostProcessInfo post_process_repo(
     RepoExport& repo,
     bool include_issues,
@@ -189,6 +357,22 @@ static PostProcessInfo post_process_repo(
     info.truncated = true;
   }
 
+  // #region agent log
+  agent_log(
+      "H1",
+      "src/main.cpp:post_process_repo:limit",
+      "truncate",
+      {{"limit", limit},
+       {"sort_by_created_at", has_created_at},
+       {"size_after_filter", info.total_available},
+       {"size_after_limit", (int)repo.items.size()},
+       {"truncated", info.truncated},
+       {"include_issues", include_issues},
+       {"include_prs", include_prs},
+       {"state", state},
+       {"reverse_order", reverse_order}});
+  // #endregion
+
   if (!repo.items.empty()) {
     info.min_number = repo.items.front().number;
     info.max_number = repo.items.back().number;
@@ -234,6 +418,7 @@ int main(int argc, char** argv) {
   bool include_prs = true;
   bool include_body = true;
   bool include_comments = true;
+  std::string pr_review_mode = "none";  // none|decision|reviews|threads
   bool include_labels = true;
   bool include_reactions = true;
   bool include_authors = true;
@@ -241,11 +426,11 @@ int main(int argc, char** argv) {
   bool include_links = true;
   bool include_assignees = true;
   bool include_milestone = true;
-  bool include_stats = true;
 
   bool reverse_order = false;
   bool progress_enabled = true;
   bool no_progress = false;
+  bool quiet = false;
   int progress_interval_ms = 100;
 
   bool no_issues = false;
@@ -259,7 +444,6 @@ int main(int argc, char** argv) {
   bool no_links = false;
   bool no_assignees = false;
   bool no_milestone = false;
-  bool no_stats = false;
 
   int labels_first = 100;
   int assignees_first = 20;
@@ -274,7 +458,8 @@ int main(int argc, char** argv) {
       ->check(CLI::IsMember({"all", "open", "closed"}));
   app.add_option("--limit", limit, "Max number of items (issues+prs). 0 means unlimited. Default: 0.");
   app.add_flag("--reverse", reverse_order, "Reverse output order (default is ascending by number).");
-  app.add_flag("--no-progress", no_progress, "Disable progress output.");
+  app.add_flag("--no-progress", no_progress, "Disable progress output (fetch/select/write). Still prints final Wrote/Stats. Use --quiet to silence everything except errors.");
+  app.add_flag("--quiet", quiet, "Quiet mode: no output except errors.");
   app.add_option("--progress-interval-ms", progress_interval_ms, "Progress refresh interval in ms. Default: 100.");
   app.add_option("--split", split_n, "Split output into multiple files, each file max N items. Requires --out be a directory.");
   app.add_flag("--per-item", per_item, "Write one file per issue/PR. Requires --out be a directory. Mutually exclusive with --split.");
@@ -282,6 +467,12 @@ int main(int argc, char** argv) {
   app.add_option("--title", title, "Markdown document title. Default: \"Issues Export\".");
   app.add_option("--stats-json", stats_json_path, "Write stats as JSON to this path.");
   app.add_option("--hostname", hostname, "GitHub hostname for `gh api` (default: github.com).");
+  app.add_option(
+         "--pr-review",
+         pr_review_mode,
+         "Export PR review data: none|decision|reviews|threads. Default: none. "
+         "Note: reviewThreads can be expensive.")
+      ->check(CLI::IsMember({"none", "decision", "reviews", "threads"}));
 
   app.add_option("--labels-first", labels_first, "Per-item GraphQL limit: labels(first: N). Default: 100 (may truncate if more).")
       ->check(CLI::Range(1, 100));
@@ -300,7 +491,6 @@ int main(int argc, char** argv) {
   app.add_flag("--no-links", no_links, "Do not export URLs/links in metadata.");
   app.add_flag("--no-assignees", no_assignees, "Do not export assignees.");
   app.add_flag("--no-milestone", no_milestone, "Do not export milestone.");
-  app.add_flag("--no-stats", no_stats, "Do not print stats to stdout by default.");
 
   CLI11_PARSE(app, argc, argv);
 
@@ -324,8 +514,11 @@ int main(int argc, char** argv) {
   include_links = !no_links;
   include_assignees = !no_assignees;
   include_milestone = !no_milestone;
-  include_stats = !no_stats;
   progress_enabled = !no_progress;
+  if (quiet) {
+    // Quiet means no non-error output. Still perform all file writes.
+    progress_enabled = false;
+  }
 
   // Parse repo_arg once: allow /owner/repo, remote URLs, and GitHub web URLs (repo/issues/pr).
   auto parsed_repo_arg = parse_repo_arg(repo_arg);
@@ -348,7 +541,15 @@ int main(int argc, char** argv) {
 
   try {
     RepoExport repo;
+    const bool include_pr_review_decision =
+        (pr_review_mode == "decision" || pr_review_mode == "reviews" || pr_review_mode == "threads");
+    const bool include_pr_reviews = (pr_review_mode == "reviews" || pr_review_mode == "threads");
+    const bool include_pr_review_threads = (pr_review_mode == "threads");
     if (!in_json.empty()) {
+      if (pr_review_mode != "none") {
+        throw std::runtime_error(
+            "--pr-review is not supported with --in JSON mode. Use online mode (GraphQL fetch) instead.");
+      }
       auto j = read_json_file(in_json);
       ConvertOptions copt;
       copt.include_body = include_body;
@@ -406,6 +607,9 @@ int main(int argc, char** argv) {
       fopt.include_links = include_links;
       fopt.include_assignees = include_assignees;
       fopt.include_milestone = include_milestone;
+      fopt.include_pr_review_decision = include_pr_review_decision;
+      fopt.include_pr_reviews = include_pr_reviews;
+      fopt.include_pr_review_threads = include_pr_review_threads;
       fopt.hostname = hostname;
       fopt.reverse_order = reverse_order;
       fopt.progress_enabled = progress_enabled;
@@ -425,10 +629,16 @@ int main(int argc, char** argv) {
       throw std::runtime_error("item not found or filtered out by --state");
     }
 
-    StatsSummary stats = compute_stats(repo);
-    if (include_stats) {
-      std::cout << stats_to_pretty_text(stats) << "\n";
+    if (progress_enabled) {
+      const int keep_n = static_cast<int>(repo.items.size());
+      const int total_n = pp.total_available;
+      std::ostringstream oss;
+      oss << "Selecting items: keep " << keep_n << "/" << total_n;
+      if (limit > 0) oss << " (--limit=" << limit << ")";
+      std::cerr << oss.str() << "\n";
     }
+
+    StatsSummary stats = compute_stats(repo);
     if (!stats_json_path.empty()) {
       write_text_file(stats_json_path, stats_to_json(stats).dump(2));
     }
@@ -437,6 +647,9 @@ int main(int argc, char** argv) {
     ropt.title = title;
     ropt.include_body = include_body;
     ropt.include_comments = include_comments;
+    ropt.include_pr_review_decision = include_pr_review_decision;
+    ropt.include_pr_reviews = include_pr_reviews;
+    ropt.include_pr_review_threads = include_pr_review_threads;
     ropt.include_labels = include_labels;
     ropt.include_reactions = include_reactions;
     ropt.include_authors = include_authors;
@@ -459,102 +672,13 @@ int main(int argc, char** argv) {
     meta.min_created_at = pp.min_created_at;
     meta.max_created_at = pp.max_created_at;
 
-    if (split_n <= 0 && !per_item) {
-      ProgressPrinter progress(/*enabled=*/progress_enabled, /*interval_ms=*/progress_interval_ms);
-      // Stream to file to avoid building a huge string and to show progress.
-      const fs::path outp = out_path;
-      const auto parent = outp.parent_path();
-      if (!parent.empty()) fs::create_directories(parent);
-      std::ofstream out(outp, std::ios::binary);
-      if (!out) throw std::runtime_error("failed to open output: " + outp.string());
-
-      write_repo_preamble(out, repo, ropt, nullptr, &meta);
-      const size_t total = repo.items.size();
-      for (size_t i = 0; i < total; i++) {
-        write_item_markdown(out, repo.items[i], ropt);
-        progress.tick("Writing markdown: " + std::to_string(i + 1) + "/" + std::to_string(total), false);
+    auto wr = write_markdown_output(repo, ropt, meta, out_path, split_n, per_item, progress_enabled, progress_interval_ms);
+    if (!quiet) {
+      if (!progress_enabled) {
+        std::cerr << wr.wrote_message << "\n";
       }
-      out.flush();
-      progress.done("Wrote: " + out_path);
-      return 0;
+      std::cout << stats_to_pretty_text(stats) << "\n";
     }
-
-    fs::path out_dir = out_path;
-    if (out_dir.extension() == ".md") {
-      // Common mistake: user passed a file path but asked for split mode.
-      out_dir = out_dir.replace_extension();
-    }
-    fs::create_directories(out_dir);
-
-    if (per_item) {
-      ProgressPrinter progress(/*enabled=*/progress_enabled, /*interval_ms=*/progress_interval_ms);
-      size_t idx = 0;
-      for (const auto& it : repo.items) {
-        idx++;
-        std::string prefix = (it.kind == ghx::ItemKind::PullRequest) ? "pr" : "issue";
-        fs::path p = out_dir / (prefix + "-" + std::to_string(it.number) + ".md");
-        const auto parent = p.parent_path();
-        if (!parent.empty()) fs::create_directories(parent);
-        std::ofstream out(p, std::ios::binary);
-        if (!out) throw std::runtime_error("failed to open output: " + p.string());
-        write_item_markdown(out, it, ropt);
-        progress.tick("Writing per-item: " + std::to_string(idx) + "/" + std::to_string(repo.items.size()), false);
-      }
-      progress.done("Wrote directory: " + out_dir.string());
-      return 0;
-    }
-
-    // split_n chunked
-    int chunk = 0;
-    const size_t total_items = repo.items.size();
-    const size_t chunk_size = static_cast<size_t>(split_n);
-    const size_t total_chunks = (total_items + chunk_size - 1) / chunk_size;
-    const int chunk_width =
-        std::max(2, static_cast<int>(std::to_string(std::max<size_t>(1, total_chunks)).size()));
-    ProgressPrinter progress(/*enabled=*/progress_enabled, /*interval_ms=*/progress_interval_ms);
-    for (size_t i = 0; i < repo.items.size(); i += static_cast<size_t>(split_n)) {
-      chunk++;
-      RepoExport sub = repo;
-      sub.items.clear();
-      size_t end = std::min(repo.items.size(), i + static_cast<size_t>(split_n));
-      for (size_t k = i; k < end; k++) sub.items.push_back(repo.items[k]);
-
-      std::ostringstream name;
-      name << "chunk-" << std::setw(chunk_width) << std::setfill('0') << chunk << ".md";
-      fs::path p = out_dir / name.str();
-      ExportMetadata chunk_meta = meta;
-      chunk_meta.limit = 0;
-      chunk_meta.truncated = false;
-      chunk_meta.total_available = static_cast<int>(sub.items.size());
-      if (!sub.items.empty()) {
-        // sub.items are already in output order
-        chunk_meta.min_number = sub.items.front().number;
-        chunk_meta.max_number = sub.items.back().number;
-        if (reverse_order) std::swap(chunk_meta.min_number, chunk_meta.max_number);
-        // Only set created_at metadata if both endpoints have timestamps
-        bool first_has_created_at = !sub.items.front().created_at.empty();
-        bool last_has_created_at = !sub.items.back().created_at.empty();
-        if (first_has_created_at && last_has_created_at) {
-          auto first = sub.items.front().created_at;
-          auto last = sub.items.back().created_at;
-          if (reverse_order) std::swap(first, last);
-          chunk_meta.min_created_at = first;
-          chunk_meta.max_created_at = last;
-        }
-      }
-
-      const auto parent = p.parent_path();
-      if (!parent.empty()) fs::create_directories(parent);
-      std::ofstream out(p, std::ios::binary);
-      if (!out) throw std::runtime_error("failed to open output: " + p.string());
-      write_repo_preamble(out, sub, ropt, nullptr, &chunk_meta);
-      for (const auto& it : sub.items) {
-        write_item_markdown(out, it, ropt);
-      }
-      progress.tick("Wrote chunk " + std::to_string(chunk) + " (" + std::to_string(sub.items.size()) + " items)", false);
-    }
-
-    progress.done("Wrote directory: " + out_dir.string());
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "Error: " << e.what() << "\n";

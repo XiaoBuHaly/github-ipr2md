@@ -233,4 +233,42 @@ exit /b 2
 echo Error: --run-reconfigure has been removed. Use --run-build (configure+build) or --run-clean (clean rebuild). 1>&2
 exit /b 2
 
+:flag_run_build
+set "RUN_BUILD=1"
+shift
+goto parse_args
+
+:flag_run_build_type
+if "%~2"=="" (
+  echo Error: --run-build-type requires a build type. ^(Debug/Release/RelWithDebInfo/MinSizeRel^) 1>&2
+  exit /b 1
+)
+set "RUN_BUILD_TYPE=%~2"
+shift
+shift
+goto parse_args
+
+:flag_run_help
+echo Usage:
+echo   run.bat [--run-* wrapper flags] [--] [github-ipr2md args...]
+echo.
+echo Wrapper flags ^(not forwarded to the executable^):
+echo   --run-build-dir ^<dir^>      Build directory ^(default: .\build^)
+echo   --run-build-type ^<type^>    Debug/Release/RelWithDebInfo/MinSizeRel ^(default: Release^)
+echo   --run-build                Force configure+build ^(no directory deletion^)
+echo   --run-clean                Clean rebuild: delete build dir then configure+build
+echo   --run-no-build             Run only, do not build ^(exe must exist^)
+echo   --run-werror               Configure with -DENABLE_WERROR=ON ^(also enabled in CI^)
+echo   --run-help, -h             Show this help
+echo   --                         Stop parsing wrapper flags; forward remaining args
+exit /b 0
+
+:flag_removed_force_build
+echo Error: --run-force-build has been removed. Use --run-build instead. 1>&2
+exit /b 2
+
+:flag_removed_reconfigure
+echo Error: --run-reconfigure has been removed. Use --run-build (configure+build) or --run-clean (clean rebuild). 1>&2
+exit /b 2
+
 

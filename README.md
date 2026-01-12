@@ -13,7 +13,7 @@ Supports exporting bodies, comments, labels, reactions, milestones, assignees, a
     - **Split Files**: Paginate into chunks (e.g., 100 items per file).
     - **One-per-Item**: Generate individual Markdown files for every issue and PR.
 - **Highly Customizable**: Toggles for every field (e.g., `--no-comments`, `--no-reactions`).
-- **Offline/JSON Support**: Convert existing JSON dumps (from `gh issue list --json`) directly to Markdown without fetching from GitHub.
+- **Offline/JSON Support**: Convert an existing JSON array (e.g. from `gh issue list --json ...`) to Markdown without fetching from GitHub (issues-only; fields depend on what your JSON contains).
 - **CI/CD Ready**: Supports idempotent mode for stable git-tracked backups.
 
 ---
@@ -26,18 +26,26 @@ No manual compilation required. The included wrapper script automatically handle
 
 ```bash
 chmod +x ./run.sh
-./run.sh
+./run.sh -- --help
 ```
 
-By default, this infers the repository from your current git directory and exports everything to `./output.md`.
+By default, this infers the repository from your current git directory and exports everything to `./output.md` (if you run without args).
 
 ### Windows (CMD/PowerShell)
 
 ```bat
-run.bat
+run.bat -- --help
 ```
 
 > **Note**: The first run will compile the project. Subsequent runs skip compilation if the executable is already present.
+
+### Authentication sanity check
+
+This tool shells out to `gh api graphql`, so make sure `gh` is installed and logged in:
+
+```bash
+gh auth status
+```
 
 ---
 
@@ -82,6 +90,7 @@ run.bat --run-build --repo https://github.com/owner/repo/issues/123 --out issue-
 - **[GitHub CLI (`gh`)](https://cli.github.com/)** (Logged in via `gh auth login`)
 - **C++17 Compiler** (GCC/Clang/MSVC)
 - **CMake**
+- **Git** (optional; only needed if you rely on `--repo` inference from the current directory)
 
 ### Manual Build
 
@@ -92,6 +101,8 @@ cmake -S . -B build
 cmake --build build -j
 # Binary located at: ./build/github-ipr2md
 ```
+
+On Windows with Visual Studio generators, the binary is typically under `.\build\Release\github-ipr2md.exe` (or `Debug/`), depending on `--config`.
 
 ---
 
@@ -131,8 +142,15 @@ Avoid huge files by splitting output into chunks (e.g., 100 items per file):
 Convert a JSON file exported by `gh` (e.g., `gh issue list --json ...`) into Markdown without network requests.
 
 ```bash
+gh issue list --repo owner/repo --state all --limit 1000 \
+  --json number,title,state,url,body,createdAt,updatedAt,closedAt,author,authorAssociation,labels,assignees,milestone \
+  > issues.json
 ./run.sh --in issues.json --out output.md
 ```
+
+Notes:
+- `--in` currently treats all items as **Issues** (no PRs).
+- `gh issue list` JSON does **not** include comment bodies; `--in` will only include comments if your JSON has a `comments: [...]` array of comment objects.
 
 ### 6. Minimal Export
 Export only the core content, skipping supplementary data to reduce noise.
@@ -156,15 +174,21 @@ Export only the core content, skipping supplementary data to reduce noise.
 | `--in PATH.json` | Convert an existing JSON file (offline mode). |
 | `--out PATH` | Output file path (or directory for split/per-item modes). |
 | `--id N` | Export a single Issue/PR by number (requires `--repo` or git remote inference). |
+| `--title TEXT` | Markdown document title (default: `Issues Export`). |
+| `--stats-json PATH.json` | Write stats summary as JSON to this path. |
+| `--hostname HOST` | Pass `--hostname` through to `gh api` (useful for GitHub Enterprise). |
 
 ### Filtering & Scope
 | Flag | Description |
 | :--- | :--- |
 | `--state [all/open/closed]` | Filter by state (Default: `all`). |
 | `--limit N` | Max number of items to export (0 = unlimited). |
-| `--reverse` | Reverse sort order (Default: Ascending by number). |
+| `--reverse` | Reverse sort order (default is oldest-first / ascending). |
 | `--no-issues` | Skip issues. |
 | `--no-prs` | Skip pull requests. |
+| `--no-progress` | Disable progress output (stderr) for fetch/select/write phases. Still prints final `Wrote:` and Stats. |
+| `--quiet` | Quiet mode: no output except errors. |
+| `--pr-review` | Export PR review data: `none|decision|reviews|threads` (default: `none`). `threads` fetches reviewThreads + inline comments and can be expensive. |
 
 ### Content Toggles
 Disable specific sections with these flags:
@@ -177,7 +201,13 @@ Disable specific sections with these flags:
 - `--no-links`
 - `--no-assignees`
 - `--no-milestone`
-- `--no-stats` (Suppress stdout stats)
+
+PR review export:
+- `--pr-review none|decision|reviews|threads` (default: `none`)
+  - `decision`: export PR `reviewDecision` summary
+  - `reviews`: export `reviewDecision` + each review record
+  - `threads`: export `reviewDecision` + reviews + inline reviewThreads (Files changed comments), fully paginated
+  - Not supported with `--in` (offline JSON conversion); use online GraphQL fetch.
 
 ### Advanced
 | Flag | Description |
@@ -185,6 +215,16 @@ Disable specific sections with these flags:
 | `--split N` | Split output into files containing N items each. |
 | `--per-item` | Create one Markdown file per Issue/PR. |
 | `--idempotent` | Remove generation timestamps for stable git diffs. |
-| `--labels-first N` | Max labels to fetch per item (GraphQL limit, default 100). |
-| `--assignees-first N` | Max assignees to fetch per item (GraphQL limit, default 20). |
+| `--labels-first N` | Max labels to fetch per item (GraphQL connection cap, default 100; not fully paginated). |
+| `--assignees-first N` | Max assignees to fetch per item (GraphQL connection cap, default 20; not fully paginated). |
 | `--progress-interval-ms N` | Refresh rate for progress bar (default 100ms). |
+
+---
+
+## Notes / Troubleshooting
+
+- **Not in a git repo / cannot infer repo**: pass `--repo owner/name` explicitly. Repo inference uses `git remote get-url origin` (or the first remote).
+- **`gh api graphql failed`**: run `gh auth status` and (re)login. For GitHub Enterprise, login with `gh auth login --hostname HOST` and run with `--hostname HOST`.
+- **`--split` / `--per-item` output path**: `--out` must be a directory. If you accidentally pass `--out something.md` with split/per-item, the tool will treat it as a directory base name (e.g. `something/`).
+- **Offline `--in` mode expectations**: it expects a JSON **array**. Only fields present in your JSON will be rendered.
+- **Windows UNC paths**: if the repo is accessed via UNC (e.g. `\\wsl.localhost\...`), `run.bat` may choose a local `%TEMP%` build directory to avoid toolchain issues.

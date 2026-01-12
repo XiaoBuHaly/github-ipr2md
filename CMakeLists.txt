@@ -76,8 +76,7 @@ add_test(
   COMMAND $<TARGET_FILE:github-ipr2md>
     --in ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/min_issue_list.json
     --out ${CMAKE_CURRENT_BINARY_DIR}/ctest-out.md
-    --no-progress
-    --no-stats
+    --quiet
     --idempotent
 )
 # Avoid parallel tests clobbering the same output file.

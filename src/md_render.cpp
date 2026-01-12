@@ -57,6 +57,95 @@ static std::string reactions_inline(const std::vector<ReactionGroup>& rgs) {
   return oss.str();
 }
 
+static std::string yes_no(bool v) { return v ? "true" : "false"; }
+
+static void write_pr_review_section(std::ostream& out, const Item& it, const RenderOptions& opt) {
+  if (it.kind != ItemKind::PullRequest) return;
+
+  if (opt.include_pr_review_decision) {
+    out << "### PR Review Decision\n\n";
+    out << (it.pr_review_decision.empty() ? "(none)\n\n" : (it.pr_review_decision + "\n\n"));
+  }
+
+  if (opt.include_pr_reviews) {
+    out << "### PR Reviews (" << (it.pr_reviews_total_count > 0 ? it.pr_reviews_total_count : (int)it.pr_reviews.size()) << ")\n\n";
+    if (it.pr_reviews.empty()) {
+      out << "(none)\n\n";
+    } else {
+      int idx = 1;
+      for (const auto& r : it.pr_reviews) {
+        out << idx++ << ". ";
+        if (opt.include_authors && r.author && !r.author->login.empty()) {
+          out << "**" << r.author->login << "**";
+          if (!r.author_association.empty()) out << " (" << r.author_association << ")";
+        } else {
+          out << "**(unknown)**";
+        }
+        if (!r.state.empty()) out << " · " << r.state;
+        if (opt.include_timestamps && !r.submitted_at.empty()) out << " · " << r.submitted_at;
+        if (opt.include_links && !r.url.empty()) out << " · " << r.url;
+        out << "\n\n";
+        if (opt.include_body) {
+          out << (r.body.empty() ? "(empty)\n" : r.body + "\n");
+        } else {
+          out << "(body omitted)\n";
+        }
+        if (opt.include_reactions && !r.reactions.empty()) {
+          auto rr = reactions_inline(r.reactions);
+          if (!rr.empty()) out << "\nReactions: " << rr << "\n";
+        }
+        out << "\n";
+      }
+    }
+  }
+
+  if (opt.include_pr_review_threads) {
+    out << "### PR Review Threads (" << (it.pr_review_threads_total_count > 0 ? it.pr_review_threads_total_count : (int)it.pr_review_threads.size())
+        << ")\n\n";
+    if (it.pr_review_threads.empty()) {
+      out << "(none)\n\n";
+    } else {
+      int tidx = 1;
+      for (const auto& t : it.pr_review_threads) {
+        out << tidx++ << ". ";
+        out << "`" << (t.path.empty() ? "(unknown)" : t.path) << "`";
+        if (t.line > 0) out << " line=" << t.line;
+        if (t.original_line > 0) out << " originalLine=" << t.original_line;
+        out << " resolved=" << yes_no(t.is_resolved) << " outdated=" << yes_no(t.is_outdated) << "\n\n";
+
+        out << "Comments (" << (t.comments_total_count > 0 ? t.comments_total_count : (int)t.comments.size()) << ")\n\n";
+        if (t.comments.empty()) {
+          out << "(none)\n\n";
+        } else {
+          int cidx = 1;
+          for (const auto& c : t.comments) {
+            out << cidx++ << ". ";
+            if (opt.include_authors && c.author && !c.author->login.empty()) {
+              out << "**" << c.author->login << "**";
+              if (!c.author_association.empty()) out << " (" << c.author_association << ")";
+            } else {
+              out << "**(unknown)**";
+            }
+            if (opt.include_timestamps && !c.created_at.empty()) out << " · " << c.created_at;
+            if (opt.include_links && !c.url.empty()) out << " · " << c.url;
+            out << "\n\n";
+            if (opt.include_body) {
+              out << (c.body.empty() ? "(empty)\n" : c.body + "\n");
+            } else {
+              out << "(body omitted)\n";
+            }
+            if (opt.include_reactions && !c.reactions.empty()) {
+              auto cr = reactions_inline(c.reactions);
+              if (!cr.empty()) out << "\nReactions: " << cr << "\n";
+            }
+            out << "\n";
+          }
+        }
+      }
+    }
+  }
+}
+
 void write_item_markdown(std::ostream& out, const Item& it, const RenderOptions& opt) {
 
   out << "## #" << it.number << " [" << kind_str(it.kind) << "] " << one_line(it.title) << "\n\n";
@@ -106,6 +195,8 @@ void write_item_markdown(std::ostream& out, const Item& it, const RenderOptions&
     out << (it.body.empty() ? "(empty)\n" : it.body + "\n");
     out << "\n";
   }
+
+  write_pr_review_section(out, it, opt);
 
   if (opt.include_comments) {
     out << "### Comments (" << (it.comments_total_count > 0 ? it.comments_total_count : (int)it.comments.size()) << ")\n\n";

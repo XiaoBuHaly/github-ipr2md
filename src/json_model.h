@@ -37,6 +37,42 @@ struct Comment {
   std::vector<ReactionGroup> reactions;
 };
 
+// PR review record (not the same as Conversation comment).
+struct PullRequestReview {
+  std::string state;         // APPROVED/CHANGES_REQUESTED/COMMENTED/...
+  std::string submitted_at;  // ISO8601 or empty
+  std::string body;
+  std::string url;
+  std::optional<User> author;
+  std::string author_association;
+  std::vector<ReactionGroup> reactions;
+};
+
+// PR review thread comment (inline comment in "Files changed").
+// Schema: PullRequestReviewComment.
+struct PullRequestReviewComment {
+  std::string body;
+  std::string url;
+  std::optional<User> author;
+  std::string author_association;
+  std::string created_at;  // ISO8601 or empty
+  std::vector<ReactionGroup> reactions;
+};
+
+struct PullRequestReviewThread {
+  std::string graphql_id;  // node id for pagination
+  std::string path;        // file path
+  int line = 0;
+  int original_line = 0;
+  bool is_resolved = false;
+  bool is_outdated = false;
+
+  std::vector<PullRequestReviewComment> comments;
+  int comments_total_count = 0;
+  bool comments_has_next_page = false;
+  std::string comments_end_cursor;
+};
+
 enum class ItemKind { Issue, PullRequest };
 
 struct Item {
@@ -65,6 +101,19 @@ struct Item {
   int comments_total_count = 0;
   bool comments_has_next_page = false;
   std::string comments_end_cursor;
+
+  // PR review data (optional; may be expensive).
+  std::string pr_review_decision;  // REVIEW_REQUIRED/APPROVED/CHANGES_REQUESTED or empty
+
+  std::vector<PullRequestReview> pr_reviews;
+  int pr_reviews_total_count = 0;
+  bool pr_reviews_has_next_page = false;
+  std::string pr_reviews_end_cursor;
+
+  std::vector<PullRequestReviewThread> pr_review_threads;
+  int pr_review_threads_total_count = 0;
+  bool pr_review_threads_has_next_page = false;
+  std::string pr_review_threads_end_cursor;
 };
 
 struct RepoExport {

@@ -32,6 +32,10 @@ struct RenderOptions {
 
   bool include_body = true;
   bool include_comments = true;
+  // PR review export (optional; can be expensive, especially reviewThreads).
+  bool include_pr_review_decision = false;
+  bool include_pr_reviews = false;
+  bool include_pr_review_threads = false;
   bool include_labels = true;
   bool include_reactions = true;
   bool include_authors = true;
