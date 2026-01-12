@@ -24,6 +24,8 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(CLI11 nlohmann_json)
 
 set(GHX_SOURCES
+  src/i18n.cpp
+  src/i18n.h
   src/main.cpp
   src/process.h
   src/progress.cpp

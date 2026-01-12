@@ -1,5 +1,6 @@
 #include "gh_graphql.h"
 
+#include "i18n.h"
 #include "process.h"
 #include "progress.h"
 
@@ -14,31 +15,6 @@
 #include <vector>
 
 namespace ghx {
-
-// #region agent log
-static void agent_log(
-    const char* hypothesisId,
-    const char* location,
-    const char* message,
-    const nlohmann::json& data) {
-  try {
-    std::ofstream f(R"(f:\113Code\github-ipr2md\.cursor\debug.log)", std::ios::app);
-    if (!f) return;
-    nlohmann::json j;
-    j["sessionId"] = "debug-session";
-    j["runId"] = "limit-run1";
-    j["hypothesisId"] = hypothesisId;
-    j["location"] = location;
-    j["message"] = message;
-    j["data"] = data;
-    j["timestamp"] = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::system_clock::now().time_since_epoch())
-                         .count();
-    f << j.dump() << "\n";
-  } catch (...) {
-  }
-}
-// #endregion
 
 static std::string jstr(const nlohmann::json& j, const char* key) {
   auto it = j.find(key);
@@ -742,7 +718,9 @@ static void paginate_comments_for_item(
   bool has_page = item.comments_has_next_page;
 
   while (has_page) {
-    progress.tick("Comments paging: #" + std::to_string(item.number) + " ...", false);
+    progress.tick(
+        I18n::tf("progress.comments_paging", {{"number", std::to_string(item.number)}}),
+        false);
     std::vector<std::pair<std::string, std::string>> vars;
     vars.emplace_back("id", graphql_id);
     vars.emplace_back("commentPerPage", std::to_string(opt.comment_per_page));
@@ -794,7 +772,9 @@ static void paginate_pr_reviews_for_item(
   std::string cursor = item.pr_reviews_end_cursor;
   bool has_page = item.pr_reviews_has_next_page;
   while (has_page) {
-    progress.tick("PR reviews paging: #" + std::to_string(item.number) + " ...", false);
+    progress.tick(
+        I18n::tf("progress.pr_reviews_paging", {{"number", std::to_string(item.number)}}),
+        false);
     std::vector<std::pair<std::string, std::string>> vars;
     vars.emplace_back("id", pr_graphql_id);
     vars.emplace_back("reviewPerPage", "100");
@@ -844,7 +824,9 @@ static void paginate_review_thread_comments_for_thread(
   std::string cursor = thread.comments_end_cursor;
   bool has_page = thread.comments_has_next_page;
   while (has_page) {
-    progress.tick("PR review thread comments paging: #" + std::to_string(pr_number_for_progress) + " ...", false);
+    progress.tick(
+        I18n::tf("progress.pr_thread_comments_paging", {{"number", std::to_string(pr_number_for_progress)}}),
+        false);
     std::vector<std::pair<std::string, std::string>> vars;
     vars.emplace_back("id", thread.graphql_id);
     vars.emplace_back("commentPerPage", std::to_string(opt.comment_per_page));
@@ -896,7 +878,9 @@ static void paginate_pr_review_threads_for_item(
   std::string cursor = item.pr_review_threads_end_cursor;
   bool has_page = item.pr_review_threads_has_next_page;
   while (has_page) {
-    progress.tick("PR reviewThreads paging: #" + std::to_string(item.number) + " ...", false);
+    progress.tick(
+        I18n::tf("progress.pr_threads_paging", {{"number", std::to_string(item.number)}}),
+        false);
     std::vector<std::pair<std::string, std::string>> vars;
     vars.emplace_back("id", pr_graphql_id);
     vars.emplace_back("threadPerPage", "100");
@@ -973,22 +957,9 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
   RepoExport out;
 
   ProgressPrinter progress(opt.progress_enabled, opt.progress_interval_ms);
-  progress.tick("Fetching " + owner + "/" + repo_name + " ...", true);
-
-  // #region agent log
-  agent_log(
-      "H1",
-      "src/gh_graphql.cpp:fetch_repo_via_gh_graphql:entry",
-      "enter",
-      {{"owner", owner},
-       {"repo", repo_name},
-       {"limit", opt.limit},
-       {"per_page", opt.per_page},
-       {"include_issues", opt.include_issues},
-       {"include_prs", opt.include_prs},
-       {"state", opt.state},
-       {"reverse_order", opt.reverse_order}});
-  // #endregion
+  progress.tick(
+      I18n::tf("progress.fetching_repo", {{"owner_repo", owner + "/" + repo_name}}),
+      true);
 
   int fetched_issues = 0;
   int fetched_prs = 0;
@@ -1069,25 +1040,6 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
       vars.emplace_back("prStates[]", "MERGED");
     }
 
-    // #region agent log
-    agent_log(
-        "H2",
-        "src/gh_graphql.cpp:fetch_repo_via_gh_graphql:before_query",
-        "loop",
-        {{"iter", loop_iter},
-         {"issuePerPage", issue_page},
-         {"prPerPage", pr_page},
-         {"prPageMode", pr_page_limit_mode},
-         {"issue_cursor_empty", issue_cursor.empty()},
-         {"pr_cursor_empty", pr_cursor.empty()},
-         {"has_issue_page", has_issue_page},
-         {"has_pr_page", has_pr_page},
-         {"fetched_issues", fetched_issues},
-         {"fetched_prs", fetched_prs},
-         {"items_size", (int)out.items.size()},
-         {"limit", opt.limit}});
-    // #endregion
-
     auto json = gh_api_graphql(query, vars, opt);
 
     auto data = json.find("data");
@@ -1124,9 +1076,13 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
             if (!item.created_at.empty()) last_issue_created_at = item.created_at;
             out.items.push_back(std::move(item));
             fetched_issues++;
-            progress.tick("Fetched issues=" + std::to_string(fetched_issues) + " prs=" + std::to_string(fetched_prs) +
-                              " items=" + std::to_string(out.items.size()),
-                          false);
+            progress.tick(
+                I18n::tf(
+                    "progress.fetched_counts",
+                    {{"issues", std::to_string(fetched_issues)},
+                     {"prs", std::to_string(fetched_prs)},
+                     {"items", std::to_string(out.items.size())}}),
+                false);
             if (opt.include_comments) {
               size_t idx = out.items.size() - 1;
               if (!id.empty() && out.items[idx].comments_has_next_page) {
@@ -1135,22 +1091,15 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
             }
           }
         }
-        progress.tick("Fetched issues=" + std::to_string(fetched_issues) + "/" + std::to_string(total) +
-                          " prs=" + std::to_string(fetched_prs) + " items=" + std::to_string(out.items.size()),
-                      false);
+        progress.tick(
+            I18n::tf(
+                "progress.fetched_counts_total",
+                {{"issues", std::to_string(fetched_issues)},
+                 {"total", std::to_string(total)},
+                 {"prs", std::to_string(fetched_prs)},
+                 {"items", std::to_string(out.items.size())}}),
+            false);
 
-        // #region agent log
-        agent_log(
-            "H4",
-            "src/gh_graphql.cpp:fetch_repo_via_gh_graphql:after_issues_page",
-            "issues_page",
-            {{"iter", loop_iter},
-             {"issues_totalCount", total},
-             {"issue_has_next_page", has_issue_page},
-             {"fetched_issues", fetched_issues},
-             {"items_size", (int)out.items.size()},
-             {"limit", opt.limit}});
-        // #endregion
       } else {
         has_issue_page = false;
       }
@@ -1179,9 +1128,13 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
             if (!item.created_at.empty()) last_pr_created_at = item.created_at;
             out.items.push_back(std::move(item));
             fetched_prs++;
-            progress.tick("Fetched issues=" + std::to_string(fetched_issues) + " prs=" + std::to_string(fetched_prs) +
-                              " items=" + std::to_string(out.items.size()),
-                          false);
+            progress.tick(
+                I18n::tf(
+                    "progress.fetched_counts",
+                    {{"issues", std::to_string(fetched_issues)},
+                     {"prs", std::to_string(fetched_prs)},
+                     {"items", std::to_string(out.items.size())}}),
+                false);
             if (opt.include_comments) {
               size_t idx = out.items.size() - 1;
               if (!id.empty() && out.items[idx].comments_has_next_page) {
@@ -1196,22 +1149,15 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
             }
           }
         }
-        progress.tick("Fetched issues=" + std::to_string(fetched_issues) + " prs=" + std::to_string(fetched_prs) +
-                          "/" + std::to_string(total) + " items=" + std::to_string(out.items.size()),
-                      false);
+        progress.tick(
+            I18n::tf(
+                "progress.fetched_prs_total",
+                {{"issues", std::to_string(fetched_issues)},
+                 {"prs", std::to_string(fetched_prs)},
+                 {"total", std::to_string(total)},
+                 {"items", std::to_string(out.items.size())}}),
+            false);
 
-        // #region agent log
-        agent_log(
-            "H4",
-            "src/gh_graphql.cpp:fetch_repo_via_gh_graphql:after_prs_page",
-            "prs_page",
-            {{"iter", loop_iter},
-             {"prs_totalCount", total},
-             {"pr_has_next_page", has_pr_page},
-             {"fetched_prs", fetched_prs},
-             {"items_size", (int)out.items.size()},
-             {"limit", opt.limit}});
-        // #endregion
       } else {
         has_pr_page = false;
       }
@@ -1300,32 +1246,6 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
         }
       }
 
-      // #region agent log
-      agent_log(
-          "H2",
-          "src/gh_graphql.cpp:fetch_repo_via_gh_graphql:limit_stop_check",
-          "stop_check",
-          {{"iter", loop_iter},
-           {"items_size", (int)out.items.size()},
-           {"limit", opt.limit},
-           {"reverse_order", opt.reverse_order},
-           {"threshold_ts", threshold_ts},
-           {"threshold_known", threshold_known},
-           {"last_issue_number", last_issue_number},
-           {"last_pr_number", last_pr_number},
-           {"last_issue_created_at", last_issue_created_at},
-           {"last_pr_created_at", last_pr_created_at},
-           {"has_issue_page", has_issue_page},
-           {"has_pr_page", has_pr_page},
-           {"bound_issue", bound_issue},
-           {"bound_pr", bound_pr},
-           {"bound_issue_known", bound_issue_known},
-           {"bound_pr_known", bound_pr_known},
-           {"stop_issues", stop_issues},
-           {"stop_prs", stop_prs},
-           {"can_stop", can_stop}});
-      // #endregion
-
       if (stop_issues) has_issue_page = false;
       if (stop_prs) has_pr_page = false;
       // Defensive: if both are safe, stop loop immediately.
@@ -1344,15 +1264,23 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
   // Fetch additional comment pages per node, like gh2md.
   if (opt.include_comments && !needs_comment_pagination.empty()) {
     const auto cquery = node_comment_query();
-    progress.tick("Fetching additional comment pages: " + std::to_string(needs_comment_pagination.size()) + " items ...", true);
+    progress.tick(
+        I18n::tf(
+            "progress.fetch_more_comments",
+            {{"count", std::to_string(needs_comment_pagination.size())}}),
+        true);
     size_t done_cnt = 0;
     for (const auto& ref : needs_comment_pagination) {
       auto& item = out.items[ref.item_index];
       paginate_comments_for_item(cquery, ref.id, item, opt, progress);
       done_cnt++;
-      progress.tick("Additional comments done: " + std::to_string(done_cnt) + "/" + std::to_string(needs_comment_pagination.size()) +
-                        " (current #" + std::to_string(item.number) + ")",
-                    false);
+      progress.tick(
+          I18n::tf(
+              "progress.comments_done",
+              {{"done", std::to_string(done_cnt)},
+               {"total", std::to_string(needs_comment_pagination.size())},
+               {"number", std::to_string(item.number)}}),
+          false);
     }
   }
 
@@ -1361,7 +1289,11 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
     const auto rquery = node_pr_reviews_query();
     const auto tquery = node_pr_review_threads_query();
     const auto tcquery = node_review_thread_comments_query();
-    progress.tick("Fetching additional PR review pages: " + std::to_string(needs_pr_review_pagination.size()) + " PRs ...", true);
+    progress.tick(
+        I18n::tf(
+            "progress.fetch_more_pr_reviews",
+            {{"count", std::to_string(needs_pr_review_pagination.size())}}),
+        true);
     size_t done_cnt = 0;
     for (const auto& ref : needs_pr_review_pagination) {
       auto& item = out.items[ref.item_index];
@@ -1370,14 +1302,17 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
         paginate_pr_review_threads_for_item(tquery, tcquery, ref.id, item, opt, progress);
       }
       done_cnt++;
-      progress.tick("Additional PR review done: " + std::to_string(done_cnt) + "/" +
-                        std::to_string(needs_pr_review_pagination.size()) +
-                        " (current #" + std::to_string(item.number) + ")",
-                    false);
+      progress.tick(
+          I18n::tf(
+              "progress.pr_review_done",
+              {{"done", std::to_string(done_cnt)},
+               {"total", std::to_string(needs_pr_review_pagination.size())},
+               {"number", std::to_string(item.number)}}),
+          false);
     }
   }
 
-  progress.done("Fetch complete. fetched_items=" + std::to_string(out.items.size()));
+  progress.done(I18n::tf("progress.fetch_complete", {{"count", std::to_string(out.items.size())}}));
 
   return out;
 }
@@ -1395,7 +1330,9 @@ RepoExport fetch_item_by_number_via_gh_graphql(
 
   ProgressPrinter progress(opt.progress_enabled, opt.progress_interval_ms);
   progress.tick(
-      "Fetching " + owner + "/" + repo_name + " #" + std::to_string(number) + " ...",
+      I18n::tf(
+          "progress.fetching_single",
+          {{"owner_repo", owner + "/" + repo_name}, {"number", std::to_string(number)}}),
       true);
 
   const auto query = single_item_query();
@@ -1464,7 +1401,7 @@ RepoExport fetch_item_by_number_via_gh_graphql(
     paginate_pr_review_threads_for_item(tquery, tcquery, id, out.items[0], opt, progress);
   }
 
-  progress.done("Fetch complete. fetched_items=" + std::to_string(out.items.size()));
+  progress.done(I18n::tf("progress.fetch_complete", {{"count", std::to_string(out.items.size())}}));
   return out;
 }
 

@@ -22,6 +22,10 @@ Supports exporting bodies, comments, labels, reactions, milestones, assignees, a
 
 No manual compilation required. The included wrapper script automatically handles CMake configuration, building, and execution.
 
+## Documentation (Chinese)
+
+See [`README.zh-CN.md`](README.zh-CN.md) for a Simplified Chinese version.
+
 ### Linux / macOS
 
 ```bash
@@ -186,6 +190,7 @@ Export only the core content, skipping supplementary data to reduce noise.
 | `--reverse` | Reverse sort order (default is oldest-first / ascending). |
 | `--no-issues` | Skip issues. |
 | `--no-prs` | Skip pull requests. |
+| `--lang` | UI language: `en|zh-CN` (default: infer from env `GHX_LANG/LANG/LC_ALL` or `en`). |
 | `--no-progress` | Disable progress output (stderr) for fetch/select/write phases. Still prints final `Wrote:` and Stats. |
 | `--quiet` | Quiet mode: no output except errors. |
 | `--pr-review` | Export PR review data: `none|decision|reviews|threads` (default: `none`). `threads` fetches reviewThreads + inline comments and can be expensive. |

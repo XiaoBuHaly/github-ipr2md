@@ -1,4 +1,5 @@
 #include "gh_graphql.h"
+#include "i18n.h"
 #include "json_convert.h"
 #include "md_render.h"
 #include "progress.h"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -23,36 +25,36 @@
 namespace fs = std::filesystem;
 using namespace ghx;
 
-// #region agent log
-static void agent_log(
-    const char* hypothesisId,
-    const char* location,
-    const char* message,
-    const nlohmann::json& data) {
-  try {
-    std::ofstream f(R"(f:\113Code\github-ipr2md\.cursor\debug.log)", std::ios::app);
-    if (!f) return;
-    nlohmann::json j;
-    j["sessionId"] = "debug-session";
-    j["runId"] = "limit-run1";
-    j["hypothesisId"] = hypothesisId;
-    j["location"] = location;
-    j["message"] = message;
-    j["data"] = data;
-    j["timestamp"] = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::system_clock::now().time_since_epoch())
-                         .count();
-    f << j.dump() << "\n";
-  } catch (...) {
-  }
-}
-// #endregion
-
 static std::string trim_ascii_ws(std::string s) {
   auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
   s.erase(s.begin(), std::find_if_not(s.begin(), s.end(), is_space));
   s.erase(std::find_if_not(s.rbegin(), s.rend(), is_space).base(), s.end());
   return s;
+}
+
+static std::string infer_locale_from_env() {
+  auto pick = [](const char* v) -> std::string {
+    if (!v || !*v) return {};
+    return std::string(v);
+  };
+  // Prefer an explicit tool-specific env var.
+  if (auto v = pick(std::getenv("GHX_LANG")); !v.empty()) return v;
+  // Common POSIX conventions.
+  if (auto v = pick(std::getenv("LC_ALL")); !v.empty()) return v;
+  if (auto v = pick(std::getenv("LANG")); !v.empty()) return v;
+  return "en";
+}
+
+static std::string preparse_lang_flag(int argc, char** argv) {
+  for (int i = 1; i < argc; i++) {
+    const std::string a = argv[i] ? std::string(argv[i]) : std::string();
+    if (a == "--lang") {
+      if (i + 1 < argc && argv[i + 1]) return std::string(argv[i + 1]);
+    }
+    const std::string prefix = "--lang=";
+    if (a.rfind(prefix, 0) == 0) return a.substr(prefix.size());
+  }
+  return {};
 }
 
 static std::string normalize_owner_repo_arg(std::string s) {
@@ -196,14 +198,18 @@ static WriteResult write_markdown_output(
           auto now = std::chrono::steady_clock::now();
           if (force || std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ui).count() >= progress_interval_ms) {
             last_ui = now;
-            progress.tick("Writing markdown: " + std::to_string(i + 1) + "/" + std::to_string(total), /*force=*/true);
+            progress.tick(
+                I18n::tf(
+                    "stage.writing_markdown",
+                    {{"cur", std::to_string(i + 1)}, {"total", std::to_string(total)}}),
+                /*force=*/true);
           }
         }
       }
     }
     out.flush();
 
-    r.wrote_message = "Wrote: " + out_path;
+    r.wrote_message = I18n::tf("cli.wrote", {{"path", out_path}});
     progress.done(r.wrote_message);
     return r;
   }
@@ -236,13 +242,17 @@ static WriteResult write_markdown_output(
           auto now = std::chrono::steady_clock::now();
           if (force || std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ui).count() >= progress_interval_ms) {
             last_ui = now;
-            progress.tick("Writing per-item: " + std::to_string(idx) + "/" + std::to_string(total), /*force=*/true);
+            progress.tick(
+                I18n::tf(
+                    "stage.writing_per_item",
+                    {{"cur", std::to_string(idx)}, {"total", std::to_string(total)}}),
+                /*force=*/true);
           }
         }
       }
     }
 
-    r.wrote_message = "Wrote directory: " + out_dir.string();
+    r.wrote_message = I18n::tf("cli.wrote_dir", {{"path", out_dir.string()}});
     progress.done(r.wrote_message);
     return r;
   }
@@ -293,10 +303,14 @@ static WriteResult write_markdown_output(
     for (const auto& it : sub.items) {
       write_item_markdown(out, it, ropt);
     }
-    progress.tick("Wrote chunk " + std::to_string(chunk) + " (" + std::to_string(sub.items.size()) + " items)", false);
+    progress.tick(
+        I18n::tf(
+            "stage.wrote_chunk",
+            {{"idx", std::to_string(chunk)}, {"count", std::to_string(sub.items.size())}}),
+        false);
   }
 
-  r.wrote_message = "Wrote directory: " + out_dir.string();
+  r.wrote_message = I18n::tf("cli.wrote_dir", {{"path", out_dir.string()}});
   progress.done(r.wrote_message);
   return r;
 }
@@ -357,22 +371,6 @@ static PostProcessInfo post_process_repo(
     info.truncated = true;
   }
 
-  // #region agent log
-  agent_log(
-      "H1",
-      "src/main.cpp:post_process_repo:limit",
-      "truncate",
-      {{"limit", limit},
-       {"sort_by_created_at", has_created_at},
-       {"size_after_filter", info.total_available},
-       {"size_after_limit", (int)repo.items.size()},
-       {"truncated", info.truncated},
-       {"include_issues", include_issues},
-       {"include_prs", include_prs},
-       {"state", state},
-       {"reverse_order", reverse_order}});
-  // #endregion
-
   if (!repo.items.empty()) {
     info.min_number = repo.items.front().number;
     info.max_number = repo.items.back().number;
@@ -397,7 +395,12 @@ static PostProcessInfo post_process_repo(
 }
 
 int main(int argc, char** argv) {
-  CLI::App app{"Export GitHub issues/PRs (and comments/metadata) to Markdown via `gh api graphql`."};
+  // Pre-parse --lang so even early-stage messages (and future help text) can be localized.
+  std::string lang = preparse_lang_flag(argc, argv);
+  if (lang.empty()) lang = infer_locale_from_env();
+  I18n::set_locale(lang);
+
+  CLI::App app{std::string(I18n::t("cli.app.desc"))};
 
   std::string repo_arg;
   std::string in_json;
@@ -407,7 +410,7 @@ int main(int argc, char** argv) {
   int split_n = 0;
   bool per_item = false;
   bool idempotent = false;
-  std::string title = "Issues Export";
+  std::string title = std::string(I18n::t("md.default_title"));
   std::string stats_json_path;
   std::string hostname;
   int id = 0;
@@ -448,58 +451,59 @@ int main(int argc, char** argv) {
   int labels_first = 100;
   int assignees_first = 20;
 
-  app.add_option("--repo", repo_arg, "Repo in owner/name format. Default: infer from git remote.");
-  app.add_option("--in", in_json, "Convert existing JSON (from `gh issue list --json ...`) to Markdown.");
-  app.add_option("--out", out_path, "Output path. Default: ./output.md (or a directory when --split/--per-item).");
-  app.add_option("--id", id, "Export a single Issue/PR by number (requires --repo or infer from git remote).");
-  auto opt_removed_issue = app.add_option("--issue", removed_issue, "(removed) Use --id instead.");
-  auto opt_removed_pr = app.add_option("--pr", removed_pr, "(removed) Use --id instead.");
-  app.add_option("--state", state, "Filter state: all|open|closed. Default: all.")
+  app.add_option("--repo", repo_arg, std::string(I18n::t("cli.help.repo")));
+  app.add_option("--in", in_json, std::string(I18n::t("cli.help.in")));
+  app.add_option("--out", out_path, std::string(I18n::t("cli.help.out")));
+  app.add_option("--id", id, std::string(I18n::t("cli.help.id")));
+  auto opt_removed_issue = app.add_option("--issue", removed_issue, std::string(I18n::t("cli.help.removed_issue")));
+  auto opt_removed_pr = app.add_option("--pr", removed_pr, std::string(I18n::t("cli.help.removed_pr")));
+  app.add_option("--state", state, std::string(I18n::t("cli.help.state")))
       ->check(CLI::IsMember({"all", "open", "closed"}));
-  app.add_option("--limit", limit, "Max number of items (issues+prs). 0 means unlimited. Default: 0.");
-  app.add_flag("--reverse", reverse_order, "Reverse output order (default is ascending by number).");
-  app.add_flag("--no-progress", no_progress, "Disable progress output (fetch/select/write). Still prints final Wrote/Stats. Use --quiet to silence everything except errors.");
-  app.add_flag("--quiet", quiet, "Quiet mode: no output except errors.");
-  app.add_option("--progress-interval-ms", progress_interval_ms, "Progress refresh interval in ms. Default: 100.");
-  app.add_option("--split", split_n, "Split output into multiple files, each file max N items. Requires --out be a directory.");
-  app.add_flag("--per-item", per_item, "Write one file per issue/PR. Requires --out be a directory. Mutually exclusive with --split.");
-  app.add_flag("--idempotent", idempotent, "Deterministic output: no generated timestamps; stable sorting where applicable.");
-  app.add_option("--title", title, "Markdown document title. Default: \"Issues Export\".");
-  app.add_option("--stats-json", stats_json_path, "Write stats as JSON to this path.");
-  app.add_option("--hostname", hostname, "GitHub hostname for `gh api` (default: github.com).");
+  app.add_option("--limit", limit, std::string(I18n::t("cli.help.limit")));
+  app.add_flag("--reverse", reverse_order, std::string(I18n::t("cli.help.reverse")));
+  app.add_flag("--no-progress", no_progress, std::string(I18n::t("cli.help.no_progress")));
+  app.add_flag("--quiet", quiet, std::string(I18n::t("cli.help.quiet")));
+  app.add_option("--progress-interval-ms", progress_interval_ms, std::string(I18n::t("cli.help.progress_interval")));
+  app.add_option("--split", split_n, std::string(I18n::t("cli.help.split")));
+  app.add_flag("--per-item", per_item, std::string(I18n::t("cli.help.per_item")));
+  app.add_flag("--idempotent", idempotent, std::string(I18n::t("cli.help.idempotent")));
+  app.add_option("--title", title, std::string(I18n::t("cli.help.title")));
+  app.add_option("--stats-json", stats_json_path, std::string(I18n::t("cli.help.stats_json")));
+  app.add_option("--hostname", hostname, std::string(I18n::t("cli.help.hostname")));
+  app.add_option("--lang", lang, std::string(I18n::t("cli.help.lang")));
   app.add_option(
          "--pr-review",
          pr_review_mode,
-         "Export PR review data: none|decision|reviews|threads. Default: none. "
-         "Note: reviewThreads can be expensive.")
+         std::string(I18n::t("cli.help.pr_review")))
       ->check(CLI::IsMember({"none", "decision", "reviews", "threads"}));
 
-  app.add_option("--labels-first", labels_first, "Per-item GraphQL limit: labels(first: N). Default: 100 (may truncate if more).")
+  app.add_option("--labels-first", labels_first, std::string(I18n::t("cli.help.labels_first")))
       ->check(CLI::Range(1, 100));
-  app.add_option("--assignees-first", assignees_first, "Per-item GraphQL limit: assignees(first: N). Default: 20 (may truncate if more).")
+  app.add_option("--assignees-first", assignees_first, std::string(I18n::t("cli.help.assignees_first")))
       ->check(CLI::Range(1, 100));
 
-  app.add_flag("--no-issues", no_issues, "Do not include issues.");
-  app.add_flag("--no-prs", no_prs, "Do not include pull requests.");
+  app.add_flag("--no-issues", no_issues, std::string(I18n::t("cli.help.no_issues")));
+  app.add_flag("--no-prs", no_prs, std::string(I18n::t("cli.help.no_prs")));
 
-  app.add_flag("--no-body", no_body, "Do not export body text.");
-  app.add_flag("--no-comments", no_comments, "Do not export comments.");
-  app.add_flag("--no-labels", no_labels, "Do not export labels.");
-  app.add_flag("--no-reactions", no_reactions, "Do not export reactions.");
-  app.add_flag("--no-authors", no_authors, "Do not export author/authorAssociation.");
-  app.add_flag("--no-timestamps", no_timestamps, "Do not export timestamps.");
-  app.add_flag("--no-links", no_links, "Do not export URLs/links in metadata.");
-  app.add_flag("--no-assignees", no_assignees, "Do not export assignees.");
-  app.add_flag("--no-milestone", no_milestone, "Do not export milestone.");
+  app.add_flag("--no-body", no_body, std::string(I18n::t("cli.help.no_body")));
+  app.add_flag("--no-comments", no_comments, std::string(I18n::t("cli.help.no_comments")));
+  app.add_flag("--no-labels", no_labels, std::string(I18n::t("cli.help.no_labels")));
+  app.add_flag("--no-reactions", no_reactions, std::string(I18n::t("cli.help.no_reactions")));
+  app.add_flag("--no-authors", no_authors, std::string(I18n::t("cli.help.no_authors")));
+  app.add_flag("--no-timestamps", no_timestamps, std::string(I18n::t("cli.help.no_timestamps")));
+  app.add_flag("--no-links", no_links, std::string(I18n::t("cli.help.no_links")));
+  app.add_flag("--no-assignees", no_assignees, std::string(I18n::t("cli.help.no_assignees")));
+  app.add_flag("--no-milestone", no_milestone, std::string(I18n::t("cli.help.no_milestone")));
 
   CLI11_PARSE(app, argc, argv);
+  I18n::set_locale(lang);
 
   if (opt_removed_issue->count() > 0) {
-    std::cerr << "Error: --issue has been removed. Use --id instead.\n";
+    std::cerr << I18n::t("cli.error.prefix") << "--issue has been removed. Use --id instead.\n";
     return 2;
   }
   if (opt_removed_pr->count() > 0) {
-    std::cerr << "Error: --pr has been removed. Use --id instead.\n";
+    std::cerr << I18n::t("cli.error.prefix") << "--pr has been removed. Use --id instead.\n";
     return 2;
   }
 
@@ -523,19 +527,19 @@ int main(int argc, char** argv) {
   // Parse repo_arg once: allow /owner/repo, remote URLs, and GitHub web URLs (repo/issues/pr).
   auto parsed_repo_arg = parse_repo_arg(repo_arg);
   if (parsed_repo_arg.id > 0 && id > 0 && parsed_repo_arg.id != id) {
-    std::cerr << "Error: conflicting id: --id and --repo URL number differ.\n";
+    std::cerr << I18n::t("cli.error.prefix") << "conflicting id: --id and --repo URL number differ.\n";
     return 2;
   }
   if (id <= 0 && parsed_repo_arg.id > 0) id = parsed_repo_arg.id;
 
   if (id > 0 && (!include_issues || !include_prs)) {
     // With --id we don't pre-classify Issue/PR; treat --no-issues/--no-prs as conflicting.
-    std::cerr << "Error: --id cannot be used with --no-issues/--no-prs.\n";
+    std::cerr << I18n::t("cli.error.prefix") << "--id cannot be used with --no-issues/--no-prs.\n";
     return 2;
   }
 
   if (per_item && split_n > 0) {
-    std::cerr << "Error: --per-item and --split are mutually exclusive.\n";
+    std::cerr << I18n::t("cli.error.prefix") << "--per-item and --split are mutually exclusive.\n";
     return 2;
   }
 
@@ -632,10 +636,18 @@ int main(int argc, char** argv) {
     if (progress_enabled) {
       const int keep_n = static_cast<int>(repo.items.size());
       const int total_n = pp.total_available;
-      std::ostringstream oss;
-      oss << "Selecting items: keep " << keep_n << "/" << total_n;
-      if (limit > 0) oss << " (--limit=" << limit << ")";
-      std::cerr << oss.str() << "\n";
+      std::string limit_suffix;
+      if (limit > 0) {
+        // Keep punctuation natural per locale.
+        if (I18n::locale() == "zh-CN") limit_suffix = "（--limit=" + std::to_string(limit) + "）";
+        else limit_suffix = " (--limit=" + std::to_string(limit) + ")";
+      }
+      std::cerr << I18n::tf(
+                       "stage.selecting_items",
+                       {{"keep", std::to_string(keep_n)},
+                        {"total", std::to_string(total_n)},
+                        {"limit_suffix", limit_suffix}})
+                << "\n";
     }
 
     StatsSummary stats = compute_stats(repo);
@@ -681,7 +693,7 @@ int main(int argc, char** argv) {
     }
     return 0;
   } catch (const std::exception& e) {
-    std::cerr << "Error: " << e.what() << "\n";
+    std::cerr << I18n::t("cli.error.prefix") << e.what() << "\n";
     return 1;
   }
 }

@@ -15,39 +15,10 @@
 #define GHX_STDERR_FILENO ::_fileno(stderr)
 #endif
 
-#include <nlohmann/json.hpp>
-
-#include <chrono>
-#include <fstream>
 #include <iostream>
 #include <vector>
 
 namespace ghx {
-
-// #region agent log
-static void agent_log(
-    const char* hypothesisId,
-    const char* location,
-    const char* message,
-    const nlohmann::json& data) {
-  try {
-    std::ofstream f(R"(f:\113Code\github-ipr2md\.cursor\debug.log)", std::ios::app);
-    if (!f) return;
-    nlohmann::json j;
-    j["sessionId"] = "debug-session";
-    j["runId"] = "limit-run1";
-    j["hypothesisId"] = hypothesisId;
-    j["location"] = location;
-    j["message"] = message;
-    j["data"] = data;
-    j["timestamp"] = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::system_clock::now().time_since_epoch())
-                         .count();
-    f << j.dump() << "\n";
-  } catch (...) {
-  }
-}
-// #endregion
 
 #if defined(_WIN32)
 static bool is_console_stderr() {
@@ -150,20 +121,6 @@ void ProgressPrinter::tick(const std::string& message, bool force) {
 
   std::lock_guard<std::mutex> lock(mu_);
   write_line(last_message_, /*same_line=*/true);
-
-  // #region agent log
-  if (last_message_.rfind("Fetched issues=", 0) == 0) {
-    agent_log(
-        "H3",
-        "src/progress.cpp:ProgressPrinter::tick",
-        "tick_line",
-        {{"is_tty", is_tty_},
-         {"spinner_enabled", spinner_enabled_},
-         {"msg", last_message_},
-         {"msg_bytes", (int)last_message_.size()},
-         {"force", force}});
-  }
-  // #endregion
 }
 
 void ProgressPrinter::done(const std::string& message) {
