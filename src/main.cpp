@@ -22,8 +22,35 @@
 #include <stdexcept>
 #include <string>
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <clocale>
+#endif
+
 namespace fs = std::filesystem;
 using namespace ghx;
+
+#if defined(_WIN32)
+static bool ghx_is_console_handle(DWORD std_handle) {
+  HANDLE h = ::GetStdHandle(std_handle);
+  if (h == nullptr || h == INVALID_HANDLE_VALUE) return false;
+  DWORD mode = 0;
+  return ::GetConsoleMode(h, &mode) != 0;
+}
+
+static void ghx_init_windows_console_utf8() {
+  // If we're attached to a real console, switch it to UTF-8 so UTF-8 bytes printed via std::cout/std::cerr
+  // are interpreted correctly (avoids mojibake like "閫氳繃...").
+  if (ghx_is_console_handle(STD_OUTPUT_HANDLE) || ghx_is_console_handle(STD_ERROR_HANDLE)) {
+    ::SetConsoleOutputCP(CP_UTF8);
+  }
+  if (ghx_is_console_handle(STD_INPUT_HANDLE)) {
+    ::SetConsoleCP(CP_UTF8);
+  }
+  // Best-effort: make C locale UTF-8 aware (affects some CRT conversions). Safe even when not a console.
+  std::setlocale(LC_ALL, ".UTF8");
+}
+#endif
 
 static std::string trim_ascii_ws(std::string s) {
   auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
@@ -395,6 +422,10 @@ static PostProcessInfo post_process_repo(
 }
 
 int main(int argc, char** argv) {
+#if defined(_WIN32)
+  ghx_init_windows_console_utf8();
+#endif
+
   // Pre-parse --lang so even early-stage messages (and future help text) can be localized.
   std::string lang = preparse_lang_flag(argc, argv);
   if (lang.empty()) lang = infer_locale_from_env();
@@ -414,8 +445,6 @@ int main(int argc, char** argv) {
   std::string stats_json_path;
   std::string hostname;
   int id = 0;
-  int removed_issue = 0;
-  int removed_pr = 0;
 
   bool include_issues = true;
   bool include_prs = true;
@@ -455,8 +484,6 @@ int main(int argc, char** argv) {
   app.add_option("--in", in_json, std::string(I18n::t("cli.help.in")));
   app.add_option("--out", out_path, std::string(I18n::t("cli.help.out")));
   app.add_option("--id", id, std::string(I18n::t("cli.help.id")));
-  auto opt_removed_issue = app.add_option("--issue", removed_issue, std::string(I18n::t("cli.help.removed_issue")));
-  auto opt_removed_pr = app.add_option("--pr", removed_pr, std::string(I18n::t("cli.help.removed_pr")));
   app.add_option("--state", state, std::string(I18n::t("cli.help.state")))
       ->check(CLI::IsMember({"all", "open", "closed"}));
   app.add_option("--limit", limit, std::string(I18n::t("cli.help.limit")));
@@ -497,15 +524,6 @@ int main(int argc, char** argv) {
 
   CLI11_PARSE(app, argc, argv);
   I18n::set_locale(lang);
-
-  if (opt_removed_issue->count() > 0) {
-    std::cerr << I18n::t("cli.error.prefix") << "--issue has been removed. Use --id instead.\n";
-    return 2;
-  }
-  if (opt_removed_pr->count() > 0) {
-    std::cerr << I18n::t("cli.error.prefix") << "--pr has been removed. Use --id instead.\n";
-    return 2;
-  }
 
   include_issues = !no_issues;
   include_prs = !no_prs;

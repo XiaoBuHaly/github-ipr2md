@@ -108,8 +108,6 @@ static const Entry kEntries[] = {
     {"cli.help.in", "Convert existing JSON (from `gh issue list --json ...`) to Markdown.", "离线转换：把现有 JSON（如 `gh issue list --json ...`）转换为 Markdown。"},
     {"cli.help.out", "Output path. Default: ./output.md (or a directory when --split/--per-item).", "输出路径。默认：./output.md（--split/--per-item 时为目录）。"},
     {"cli.help.id", "Export a single Issue/PR by number (requires --repo or infer from git remote).", "按编号导出单个 Issue/PR（需要 --repo 或从 git remote 推断）。"},
-    {"cli.help.removed_issue", "(removed) Use --id instead.", "（已移除）请改用 --id。"},
-    {"cli.help.removed_pr", "(removed) Use --id instead.", "（已移除）请改用 --id。"},
     {"cli.help.state", "Filter state: all|open|closed. Default: all.", "状态筛选：all|open|closed。默认：all。"},
     {"cli.help.limit", "Max number of items (issues+prs). 0 means unlimited. Default: 0.", "最多导出条目数（issues+prs）。0 表示不限。默认：0。"},
     {"cli.help.reverse", "Reverse output order (default is ascending by number).", "反转输出顺序（默认按编号升序）。"},

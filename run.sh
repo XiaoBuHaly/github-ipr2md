@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --run-reconfigure|--run-force-build)
-      echo "错误: 脚本参数 $1 已移除。请改用:" >&2
+      echo "错误: 不支持脚本参数 $1。请改用:" >&2
       if [[ "$1" == "--run-force-build" ]]; then
         echo "  --run-build" >&2
       else

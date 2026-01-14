@@ -1,4 +1,7 @@
 @echo off
+REM Ensure this CMD session uses UTF-8 so the executable's UTF-8 output (e.g. zh-CN help text) won't be mojibake.
+REM Note: run.bat is executed via cmd.exe even when invoked from PowerShell.
+chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 REM Root of repo (directory containing this script)
@@ -226,11 +229,11 @@ echo   --                         Stop parsing wrapper flags; forward remaining 
 exit /b 0
 
 ::flag_removed_force_build
-echo Error: --run-force-build has been removed. Use --run-build instead. 1>&2
+echo Error: --run-force-build is not supported. Use --run-build instead. 1>&2
 exit /b 2
 
 ::flag_removed_reconfigure
-echo Error: --run-reconfigure has been removed. Use --run-build (configure+build) or --run-clean (clean rebuild). 1>&2
+echo Error: --run-reconfigure is not supported. Use --run-build (configure+build) or --run-clean (clean rebuild). 1>&2
 exit /b 2
 
 :flag_run_build
