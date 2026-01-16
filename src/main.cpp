@@ -84,6 +84,36 @@ static std::string preparse_lang_flag(int argc, char** argv) {
   return {};
 }
 
+static bool argv_has_explicit_title_flag(int argc, char** argv) {
+  for (int i = 1; i < argc; i++) {
+    const std::string a = argv[i] ? std::string(argv[i]) : std::string();
+    if (a == "--") break;
+    if (a == "--title") return true;
+    const std::string prefix = "--title=";
+    if (a.rfind(prefix, 0) == 0) return true;
+  }
+  return false;
+}
+
+static std::string auto_title_for_repo(const RepoExport& repo, bool include_issues, bool include_prs) {
+  int issue_count = 0;
+  int pr_count = 0;
+  for (const auto& it : repo.items) {
+    if (it.kind == ItemKind::PullRequest) {
+      pr_count++;
+    } else {
+      issue_count++;
+    }
+  }
+  if (issue_count > 0 && pr_count == 0) return std::string(I18n::t("md.title.issues"));
+  if (pr_count > 0 && issue_count == 0) return std::string(I18n::t("md.title.prs"));
+  if (issue_count > 0 && pr_count > 0) return std::string(I18n::t("md.title.issues_prs"));
+  if (include_issues && include_prs) return std::string(I18n::t("md.title.issues_prs"));
+  if (include_issues) return std::string(I18n::t("md.title.issues"));
+  if (include_prs) return std::string(I18n::t("md.title.prs"));
+  return std::string(I18n::t("md.default_title"));
+}
+
 static std::string normalize_owner_repo_arg(std::string s) {
   s = trim_ascii_ws(std::move(s));
   // Drop URL fragments and query strings (common when pasting GitHub URLs).
@@ -430,6 +460,7 @@ int main(int argc, char** argv) {
   std::string lang = preparse_lang_flag(argc, argv);
   if (lang.empty()) lang = infer_locale_from_env();
   I18n::set_locale(lang);
+  const bool title_explicit = argv_has_explicit_title_flag(argc, argv);
 
   CLI::App app{std::string(I18n::t("cli.app.desc"))};
 
@@ -649,6 +680,10 @@ int main(int argc, char** argv) {
 
     if (id > 0 && repo.items.empty()) {
       throw std::runtime_error("item not found or filtered out by --state");
+    }
+
+    if (!title_explicit) {
+      title = auto_title_for_repo(repo, include_issues, include_prs);
     }
 
     if (progress_enabled) {

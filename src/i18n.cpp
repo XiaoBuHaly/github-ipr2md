@@ -135,6 +135,9 @@ static const Entry kEntries[] = {
     {"cli.help.no_links", "Do not export URLs/links in metadata.", "不导出元数据里的链接。"},
     {"cli.help.no_assignees", "Do not export assignees.", "不导出负责人。"},
     {"cli.help.no_milestone", "Do not export milestone.", "不导出里程碑。"},
+    {"md.title.issues", "Issues Export", "Issues 导出"},
+    {"md.title.prs", "PR Export", "PR 导出"},
+    {"md.title.issues_prs", "Issues/PRs Export", "Issues/PR 导出"},
     {"md.default_title", "Issues Export", "Issues 导出"},
 };
 
