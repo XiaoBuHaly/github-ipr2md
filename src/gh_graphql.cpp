@@ -7,11 +7,14 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ghx {
@@ -410,7 +413,11 @@ query(
             originalLine
             isResolved
             isOutdated
-            comments(first: $commentPerPage) {
+            # IMPORTANT: Keep nested thread comment "first" tiny.
+            # Otherwise the repo-level query can exceed GitHub's 500k node cap:
+            # prPerPage * threadFirst * threadCommentFirst.
+            # Full thread comment pagination is handled later per thread.
+            comments(first: 1) {
               totalCount
               pageInfo { endCursor hasNextPage }
               nodes {
@@ -538,7 +545,7 @@ query(
             originalLine
             isResolved
             isOutdated
-            comments(first: $commentPerPage) {
+            comments(first: 1) {
               totalCount
               pageInfo { endCursor hasNextPage }
               nodes {
@@ -873,7 +880,15 @@ static void paginate_pr_review_threads_for_item(
   if (pr_graphql_id.empty()) return;
   if (!opt.include_pr_review_threads) return;
   if (item.kind != ItemKind::PullRequest) return;
-  if (!item.pr_review_threads_has_next_page) return;
+
+  // Always paginate comments for the initial threads we already have (even if there
+  // are no further thread pages). This is required when the initial query intentionally
+  // fetches only a tiny first page of thread comments to stay under GitHub's node cap.
+  if (!item.pr_review_threads.empty()) {
+    for (auto& th : item.pr_review_threads) {
+      paginate_review_thread_comments_for_thread(thread_comment_query, th, opt, progress, item.number);
+    }
+  }
 
   std::string cursor = item.pr_review_threads_end_cursor;
   bool has_page = item.pr_review_threads_has_next_page;
@@ -920,14 +935,6 @@ static void paginate_pr_review_threads_for_item(
   item.pr_review_threads_has_next_page = has_page;
   item.pr_review_threads_total_count =
       std::max(item.pr_review_threads_total_count, static_cast<int>(item.pr_review_threads.size()));
-
-  // Also ensure the initial threads have their comments fully paginated.
-  // (They may have been included in the initial query already.)
-  if (!item.pr_review_threads.empty()) {
-    for (auto& th : item.pr_review_threads) {
-      paginate_review_thread_comments_for_thread(thread_comment_query, th, opt, progress, item.number);
-    }
-  }
 }
 
 static nlohmann::json gh_api_graphql(
@@ -943,14 +950,63 @@ static nlohmann::json gh_api_graphql(
     args.push_back("-F");
     args.push_back(kv.first + "=" + kv.second);
   }
-  auto r = run_process(args, query);
-  if (r.exit_code != 0) {
-    std::ostringstream oss;
-    oss << "gh api graphql failed (exit=" << r.exit_code << ")";
-    if (!r.stderr_str.empty()) oss << "\n" << r.stderr_str;
-    throw std::runtime_error(oss.str());
+  auto contains_icase = [](const std::string& haystack, const char* needle) -> bool {
+    if (!needle || !*needle) return true;
+    const size_t nlen = std::strlen(needle);
+    auto it = std::search(
+        haystack.begin(), haystack.end(),
+        needle, needle + nlen,
+        [](char a, char b) {
+          return std::tolower(static_cast<unsigned char>(a)) ==
+                 std::tolower(static_cast<unsigned char>(b));
+        });
+    return it != haystack.end();
+  };
+
+  auto is_transient_gh_failure = [&](const std::string& stderr_str) -> bool {
+    // Network / transport errors
+    if (contains_icase(stderr_str, "connectex")) return true;
+    if (contains_icase(stderr_str, "dial tcp")) return true;
+    if (contains_icase(stderr_str, "timeout")) return true;
+    if (contains_icase(stderr_str, "connection reset")) return true;
+    if (contains_icase(stderr_str, "connection refused")) return true;
+    if (contains_icase(stderr_str, "tls handshake")) return true;
+    if (contains_icase(stderr_str, "could not resolve host")) return true;
+    if (contains_icase(stderr_str, "temporary failure")) return true;
+    if (contains_icase(stderr_str, "EOF")) return true;
+    // Server-side flakiness
+    if (contains_icase(stderr_str, "502")) return true;
+    if (contains_icase(stderr_str, "503")) return true;
+    if (contains_icase(stderr_str, "504")) return true;
+    if (contains_icase(stderr_str, "Bad Gateway")) return true;
+    if (contains_icase(stderr_str, "Service Unavailable")) return true;
+    if (contains_icase(stderr_str, "Gateway Timeout")) return true;
+    // Rate limiting can be transient; we don't have headers here so we just retry with backoff.
+    if (contains_icase(stderr_str, "rate limit")) return true;
+    return false;
+  };
+
+  const int max_attempts = 5;
+  for (int attempt = 1; attempt <= max_attempts; attempt++) {
+    auto r = run_process(args, query);
+    if (r.exit_code == 0) {
+      return nlohmann::json::parse(r.stdout_str);
+    }
+
+    const bool can_retry = (attempt < max_attempts) && is_transient_gh_failure(r.stderr_str);
+    if (!can_retry) {
+      std::ostringstream oss;
+      oss << "gh api graphql failed (exit=" << r.exit_code << ")";
+      if (!r.stderr_str.empty()) oss << "\n" << r.stderr_str;
+      throw std::runtime_error(oss.str());
+    }
+
+    // Exponential backoff: 0.5s, 1s, 2s, 4s (capped).
+    const int backoff_ms = std::min(8000, 500 * (1 << (attempt - 1)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
   }
-  return nlohmann::json::parse(r.stdout_str);
+
+  throw std::runtime_error("gh api graphql failed after retries");
 }
 
 RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string& repo_name, const FetchOptions& opt) {
@@ -1143,7 +1199,18 @@ RepoExport fetch_repo_via_gh_graphql(const std::string& owner, const std::string
             }
             if ((opt.include_pr_reviews || opt.include_pr_review_threads) && !id.empty()) {
               size_t idx = out.items.size() - 1;
-              if (out.items[idx].pr_reviews_has_next_page || out.items[idx].pr_review_threads_has_next_page) {
+              bool need = false;
+              if (opt.include_pr_reviews && out.items[idx].pr_reviews_has_next_page) need = true;
+              if (opt.include_pr_review_threads) {
+                if (out.items[idx].pr_review_threads_has_next_page) need = true;
+                if (!need && !out.items[idx].pr_review_threads.empty()) {
+                  // Even if there is only one page of threads, thread COMMENTS might still need pagination.
+                  for (const auto& th : out.items[idx].pr_review_threads) {
+                    if (th.comments_has_next_page) { need = true; break; }
+                  }
+                }
+              }
+              if (need) {
                 needs_pr_review_pagination.push_back(NodeRef{id, idx});
               }
             }
